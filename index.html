@@ -1,0 +1,1595 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>나의 매매일지</title>
+<style>
+  :root{
+    --bg:#0e1116; --card:#161b22; --card2:#1c2230; --border:#28303c;
+    --text:#e7eaef; --muted:#8b93a1;
+    --accent:#c8952f; --accent-dark:#a9781f; --on-accent:#12100a;
+    --profit:#3fb96b; --profit-bg:rgba(63,185,107,.14);
+    --loss:#e5484d; --loss-bg:rgba(229,72,77,.14);
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  }
+  .wrap{max-width:440px; margin:0 auto; padding:20px 18px 100px;}
+  .serif{font-family:Georgia,"Nanum Myeongjo",serif;}
+  .muted{color:var(--muted);}
+  .small{font-size:12px;}
+  .center{text-align:center;}
+  .pad{padding:32px 0;}
+  h1{font-size:18px; margin:0; font-weight:800; letter-spacing:-.01em;}
+  .header-top{display:flex; align-items:center; gap:10px; margin-bottom:14px;}
+  .logo{width:38px;height:38px;border-radius:12px;background:#1c2230;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex-shrink:0;padding:5px;}
+  .header-right{margin-left:auto; text-align:right;}
+  .link-btn{background:none;border:none;color:var(--muted);font-size:11px;cursor:pointer;text-decoration:underline;padding:0;}
+  .tabs{display:flex; gap:8px; margin-bottom:16px;}
+  .tab-btn{flex:1; padding:9px 0; border-radius:12px; border:1px solid var(--border); background:var(--card2); color:var(--muted); font-size:13px; font-weight:600; cursor:pointer;}
+  .tab-btn.active{background:var(--accent); color:var(--on-accent); border-color:var(--accent);}
+  .card{background:var(--card); border:1px solid var(--border); border-radius:16px; padding:16px; margin-bottom:12px; box-shadow:0 2px 10px rgba(0,0,0,.35);}
+  .grid-2{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .stat-label{font-size:12px; color:var(--muted); margin:0 0 4px;}
+  .stat-value{font-size:19px; font-weight:800; margin:0;}
+  .profit{color:var(--profit);} .loss{color:var(--loss);}
+  .badge{font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;}
+  .badge.long{background:var(--profit-bg); color:var(--profit);}
+  .badge.short{background:var(--loss-bg); color:var(--loss);}
+  .trade-top{display:flex; align-items:center; justify-content:space-between;}
+  .trade-left{display:flex; align-items:center; gap:8px;}
+  .ticker-name{font-weight:700;}
+  .trade-actions{display:flex; gap:12px;}
+  .icon-btn{background:none; border:none; color:var(--muted); cursor:pointer; font-size:13px; padding:0;}
+  .icon-btn.danger-active{color:var(--loss); font-weight:700; font-size:11px;}
+  .trade-meta{font-size:12px; color:var(--muted); margin:6px 0 0;}
+  .trade-bottom{display:flex; justify-content:space-between; align-items:flex-end; margin-top:6px;}
+  .fab-wrap{position:fixed; bottom:22px; left:0; right:0; display:flex; justify-content:center; pointer-events:none; z-index:15;}
+  .fab-inner{width:100%; max-width:440px; padding:0 18px; display:flex; justify-content:flex-end;}
+  .fab{pointer-events:auto; background:var(--accent); color:var(--on-accent); border:none; border-radius:999px; padding:13px 20px; font-size:14px; font-weight:800; cursor:pointer; box-shadow:0 6px 18px rgba(0,0,0,.5), 0 0 0 1px rgba(200,149,47,.4);}
+  .modal-overlay{position:fixed; inset:0; background:rgba(0,0,0,.62); display:flex; align-items:flex-end; justify-content:center; z-index:30;}
+  .modal{background:var(--bg); width:100%; max-width:440px; border-radius:20px 20px 0 0; border-top:1px solid var(--border); padding:20px 18px 26px; max-height:86vh; overflow-y:auto;}
+  .modal-head{display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;}
+  .modal-head h2{font-size:17px; margin:0; font-weight:800;}
+  .close-btn{background:none; border:none; font-size:18px; color:var(--muted); cursor:pointer;}
+  .field{margin-bottom:14px;}
+  .field label{font-size:12px; color:var(--muted); display:block; margin-bottom:5px;}
+  input[type=date], input[type=text], input[type=time], input[type=email], input[type=password], select{
+    width:100%; border:1px solid var(--border); background:var(--card2); border-radius:12px;
+    padding:11px 12px; font-size:14px; color:var(--text); outline:none;
+    -webkit-appearance:none; appearance:none;
+  }
+  input:focus, select:focus, textarea:focus{border-color:var(--accent);}
+  input::placeholder, textarea::placeholder{color:#5c6472;}
+  input[type=date], input[type=time]{color-scheme:dark;}
+  select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%238b93a1' d='M6 8L0 0h12z'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 14px center;}
+  .btn-row{display:flex; gap:8px; flex-wrap:wrap;}
+  .btn-row .opt-btn{flex:1 1 60px;}
+  .opt-btn{flex:1; padding:9px 0; border-radius:12px; border:1px solid var(--border); background:var(--card2); color:var(--muted); font-size:13px; font-weight:600; cursor:pointer;}
+  .opt-btn.active{background:var(--accent); color:var(--on-accent); border-color:var(--accent);}
+  .two-col{display:grid; grid-template-columns:1fr 1fr; gap:10px;}
+  .preview-box{background:var(--card2); border:1px solid var(--border); border-radius:12px; padding:12px; display:flex; justify-content:space-between; align-items:center; font-size:13px;}
+  .modal-btns{display:flex; gap:10px; margin-top:16px;}
+  .btn-cancel{flex:1; padding:13px 0; border-radius:12px; border:1px solid var(--border); background:transparent; color:var(--muted); font-weight:700; font-size:14px; cursor:pointer;}
+  .btn-save{flex:1; padding:13px 0; border-radius:12px; border:none; background:var(--accent); color:var(--on-accent); font-weight:800; font-size:14px; cursor:pointer;}
+  .btn-save:disabled{opacity:.4; cursor:not-allowed;}
+  .cal-nav{display:flex; align-items:center; justify-content:space-between; margin-bottom:2px;}
+  .cal-nav button{background:none; border:none; font-size:16px; color:var(--muted); cursor:pointer; padding:4px 10px;}
+  .cal-title{font-weight:800; font-size:14px;}
+  .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:4px; margin-top:10px;}
+  .cal-wd{text-align:center; font-size:11px; color:var(--muted); margin-bottom:2px;}
+  .cal-cell{border-radius:10px; text-align:center; padding:6px 0; min-height:34px; background:var(--card2);}
+  .cal-cell .d{font-size:10px; color:var(--muted);}
+  .cal-cell .v{font-size:10px; font-weight:700; line-height:1.1;}
+  .chart-svg{width:100%; height:150px;}
+  .clear-all{background:none; border:none; color:var(--muted); font-size:12px; text-decoration:underline; display:block; margin:6px auto; cursor:pointer;}
+  /* weekly coaching card */
+  .coach-card{position:relative; overflow:hidden; border-radius:18px; padding:18px 18px 16px; margin-bottom:14px; border:1px solid var(--border);}
+  .coach-card.good{background:#132218; border-color:#1f3a2a;}
+  .coach-card.neutral{background:#211c12; border-color:#3a3019;}
+  .coach-card.bad{background:#221316; border-color:#3a1f22;}
+  .coach-card.empty{background:var(--card); border-color:var(--border);}
+  .coach-top{display:flex; justify-content:space-between; align-items:center;}
+  .coach-label{color:var(--accent); font-weight:800; font-size:13px; letter-spacing:.04em;}
+  .coach-badge{width:34px;height:34px;border-radius:10px;background:rgba(255,255,255,.05);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;padding:6px;}
+  .coach-r-label{font-size:12px;color:var(--muted);margin:14px 0 0;}
+  .coach-r{font-size:30px;font-weight:800;margin:2px 0 0;line-height:1;}
+  .coach-title{font-size:21px;font-weight:800;margin:12px 0 0;}
+  .coach-desc{font-size:13.5px;color:#aab2bf;line-height:1.55;margin:8px 0 0;max-width:80%;}
+  .coach-chips{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;position:relative;z-index:2;}
+  .coach-chips .chip{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:999px;padding:7px 13px;font-size:12px;color:#cdd3dc;font-weight:700;}
+  .coach-deco{position:absolute;right:-6px;bottom:-8px;width:120px;height:120px;opacity:.2;pointer-events:none;z-index:1;}
+  /* period sub-selector + group headers + export */
+  .logbar{display:flex; align-items:center; gap:8px; margin:4px 0 12px;}
+  .subseg{display:flex; gap:6px; background:var(--card2); border:1px solid var(--border); border-radius:999px; padding:3px;}
+  .subseg button{border:none; background:none; color:var(--muted); font-size:12px; font-weight:700; padding:6px 12px; border-radius:999px; cursor:pointer;}
+  .subseg button.active{background:var(--accent); color:var(--on-accent);}
+  .exp-btn{margin-left:auto; background:var(--card2); border:1px solid var(--border); color:var(--accent); font-size:12px; font-weight:700; padding:7px 12px; border-radius:999px; cursor:pointer; white-space:nowrap;}
+  .grp-head{display:flex; justify-content:space-between; align-items:baseline; margin:16px 2px 8px;}
+  .grp-label{font-weight:800; font-size:13px;}
+  .grp-sub{font-size:12px; font-weight:700;}
+  .cal-cell.clickable{cursor:pointer;}
+  .cal-cell.clickable:active{filter:brightness(1.15);}
+  .day-meta{font-size:12px; color:var(--muted); margin:4px 0 0; display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
+  .tag{background:rgba(200,149,47,.16); color:var(--accent); border-radius:6px; padding:2px 7px; font-size:11px; font-weight:600;}
+  textarea{width:100%; border:1px solid var(--border); background:var(--card2); border-radius:12px; padding:11px 12px; font-size:14px; color:var(--text); outline:none; resize:vertical; min-height:44px; font-family:inherit;}
+  /* open positions */
+  .card.open{border-color:rgba(200,149,47,.5); background:#191d26;}
+  .open-badge{font-size:10px;font-weight:800;letter-spacing:.06em;color:var(--on-accent);background:var(--accent);border-radius:6px;padding:2px 7px;}
+  .btn-exit{background:var(--accent);color:var(--on-accent);border:none;border-radius:10px;padding:8px 14px;font-size:12px;font-weight:800;cursor:pointer;}
+  .exit-row{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);padding:4px 0;border-top:1px dashed var(--border);}
+  .sec-head{display:flex;align-items:center;gap:8px;margin:4px 2px 8px;}
+  .sec-head .t{font-weight:800;font-size:13px;}
+  /* bias score panel */
+  .bias-head{margin-bottom:12px;}
+  .bias-sub{font-size:12px;color:var(--muted);margin:0 0 10px;}
+  .bias-verdict{font-size:34px;font-weight:800;margin:4px 0 0;line-height:1.1;}
+  .bias-verdict.good{color:var(--profit);} .bias-verdict.bad{color:var(--loss);}
+  .bias-verdict.neutral{color:#d9a441;} .bias-verdict.flat{color:var(--muted);}
+  .bias-total{font-size:44px;font-weight:800;line-height:1;margin:0;}
+  .bias-action{font-size:13px;color:#aab2bf;line-height:1.55;margin:10px 0 0;}
+  .meter{position:relative;height:8px;border-radius:999px;margin:14px 0 6px;
+    background:linear-gradient(90deg,#e5484d 0%,#e5484d 20%,#8a3d40 30%,#3d434f 44%,#3d434f 56%,#2f6a4a 70%,#3fb96b 80%,#3fb96b 100%);}
+  .meter-pin{position:absolute;top:-5px;width:4px;height:18px;border-radius:2px;background:#fff;box-shadow:0 0 0 2px rgba(0,0,0,.45);transform:translateX(-2px);}
+  .meter-labels{display:flex;justify-content:space-between;font-size:10px;color:var(--muted);}
+  .fac{border-top:1px solid var(--border);padding:12px 0;}
+  .fac:first-child{border-top:none;}
+  .fac-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;}
+  .fac-name{font-size:13px;font-weight:700;}
+  .fac-pts{font-size:12px;font-weight:800;font-family:Georgia,serif;}
+  .fac-hint{font-size:11px;color:var(--muted);line-height:1.5;margin:6px 0 0;}
+  .fac-desc{font-size:11px;color:#7f8797;line-height:1.5;margin:6px 0 0;font-style:italic;}
+  .zone-row{display:flex;justify-content:space-between;font-size:11px;padding:5px 0;border-top:1px solid var(--border);}
+  .zone-row.here{color:var(--accent);font-weight:800;}
+  .toast{position:fixed; left:50%; bottom:80px; transform:translateX(-50%); background:#eceef2; color:#12141a; font-size:13px; font-weight:600; padding:10px 16px; border-radius:999px; z-index:50; opacity:0; transition:opacity .2s; pointer-events:none;}
+  .toast.show{opacity:1;}
+  /* auth + banner */
+  .banner{background:rgba(200,149,47,.1); border:1px solid rgba(200,149,47,.34); color:#e0b866; font-size:12px; border-radius:12px; padding:9px 12px; margin-bottom:12px;}
+  .auth-wrap{max-width:400px; margin:0 auto; padding:48px 18px;}
+  .auth-title{font-size:22px; font-weight:800; text-align:center; margin:14px 0 4px;}
+  .auth-sub{font-size:13px; color:var(--muted); text-align:center; margin:0 0 22px;}
+  .auth-err{background:var(--loss-bg); color:var(--loss); font-size:12px; border-radius:10px; padding:9px 12px; margin-bottom:12px;}
+  .auth-ok{background:var(--profit-bg); color:var(--profit); font-size:12px; border-radius:10px; padding:9px 12px; margin-bottom:12px;}
+  .auth-switch{text-align:center; font-size:12px; color:var(--muted); margin-top:16px;}
+  .auth-switch button{background:none;border:none;color:var(--accent);font-weight:700;cursor:pointer;font-size:12px;}
+  .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--on-accent);border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .sync-dot{font-size:11px;color:var(--muted);}
+</style>
+<!-- Supabase 클라이언트 (인터넷 필요). 미설정 시 자동으로 이 기기 로컬 저장 모드로 동작 -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<style id="appswitch-css">
+#appswitch{display:flex;gap:0;margin:0 0 16px;border-bottom:1px solid rgba(128,128,128,.28);
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
+#appswitch a{display:block;padding:9px 18px;font-size:13.5px;font-weight:600;text-decoration:none;
+  color:#8b8b8b;border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .12s}
+#appswitch a:hover{color:#4a4a4a}
+#appswitch a.on{color:#111;border-bottom-color:#111}
+@media(prefers-color-scheme:dark){
+  #appswitch a{color:#7d7d7d} #appswitch a:hover{color:#c8c8c8}
+  #appswitch a.on{color:#f0f0f0;border-bottom-color:#f0f0f0}}
+#appswitch-wrap{max-width:1180px;margin:0 auto;padding:14px 18px 0}
+</style>
+<div id="appswitch-wrap"><nav id="appswitch">
+<a href="./index.html" class="on">선물 매매일지</a>
+<a href="./portfolio.html">가족 포트폴리오</a>
+</nav></div>
+
+<div id="root"></div>
+
+<script>
+/* ============================================================
+   ⚙️  설정 — 아래 두 값을 Supabase 프로젝트 값으로 바꾸세요.
+   (Supabase 대시보드 → Project Settings → Data API / API Keys)
+   두 값을 그대로 두면 "이 기기 로컬 저장" 모드로 동작합니다.
+   ============================================================ */
+const SUPABASE_URL  = 'https://wngwnpuqagzkdifjfnnh.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_u469Jki_xxsMU8-rToOePw_-O-9XIhY';
+
+// 수수료: "왕복 1계약당" 금액($). 본인 증권사 실제 수수료로 바꾸세요.
+// 예: 왕복 1계약 $1.24 라면 1.24 로 변경. 계약 수만큼 자동 곱해집니다.
+const COMMISSION_PER_CONTRACT = 2;
+/* ============================================================ */
+
+const CLOUD = SUPABASE_URL.startsWith('http') && SUPABASE_ANON_KEY.length > 20
+              && typeof window.supabase !== 'undefined';
+let sb = null;
+if (CLOUD) { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); }
+
+const TICKERS = ['MES','MNQ','MYM','MCL','MGC','CUSTOM'];
+const MULT = { MES:5, MNQ:2, MYM:0.5, MCL:100, MGC:10 };  // $/1.0 가격이동 (MCL: 원유 $1 이동=$100 / MGC: 금 $1 이동=$10)
+const WEEKDAYS = ['월','화','수','목','금','토','일'];
+const STORE_KEY = 'tj_trades_v1';
+const BIAS_KEY  = 'tj_bias_v1';
+
+/* ============================================================
+   바이어스 점수 시스템 (총 ±75점)
+   설계 원칙: 구조(1H+15M)=±30 → 구조만으로는 '강한'(±35)에 못 닿음.
+   반드시 PD Array·SMT 같은 확증이 붙어야 강한 신호가 나오도록 의도.
+   ※ 이 가중치는 "가설"입니다. 거래 데이터로 검증 후 조정하세요.
+   ============================================================ */
+const BIAS_FACTORS = [
+  { key:'h1', label:'1H 구조', max:18,
+    hint:'스윙=좌우 2봉보다 높은 고점(저점은 반대). 돌파는 꼬리 아닌 <b>종가</b> 기준.',
+    checklist:[
+      '① 최근 스윙 하이 2개, 스윙 로우 2개에 점을 찍는다 (좌우 2봉 기준)',
+      '② 최근 스윙 하이가 직전보다 높은가? → HH',
+      '③ 최근 스윙 로우가 직전보다 높은가? → HL',
+      '④ 직전 스윙 하이를 <b>종가로</b> 돌파했는가? → BOS',
+      'HH+HL+BOS = 강한 상승 / HH+HL만 = 상승 / 엇갈림 = 중립 (하락은 반대로)'
+    ],
+    options:[
+      {v:'strongUp',  t:'강한 상승', s:18, d:'직전 스윙 하이 종가 돌파(BOS) + 저점 계속 상승'},
+      {v:'up',        t:'상승',      s:11, d:'고점·저점은 높아지나 최근 BOS 없음 / 되돌림 깊음'},
+      {v:'neutral',   t:'중립·레인지', s:0, d:'고점·저점 겹치고 방향 없음'},
+      {v:'down',      t:'하락',      s:-11, d:'고점·저점 낮아지나 최근 BOS 없음'},
+      {v:'strongDown',t:'강한 하락', s:-18, d:'직전 스윙 로우 종가 이탈(BOS) + 고점 계속 하락'},
+    ]},
+  { key:'m15', label:'15M 구조', max:12,
+    hint:'1H가 상사, 15M은 실행 담당. <b>1H와 같은 방향일 때만</b> 만점 반영(반대면 절반으로 감쇠).',
+    checklist:[
+      '1H와 <b>같은 판정 절차</b>를 15분봉에 그대로 적용',
+      '1H 상승인데 15M 하락 = 숏 신호가 아니라 <b>눌림목 진행 중</b>',
+      '그래서 반대 방향이면 점수가 절반으로 줄어들 뿐, 방향을 뒤집지 않음'
+    ],
+    options:[
+      {v:'strongUp',  t:'강한 상승', s:12, d:'15M BOS 상방 + 저점 상승'},
+      {v:'up',        t:'상승',      s:7,  d:'상승 구조이나 확정 약함'},
+      {v:'neutral',   t:'중립',      s:0,  d:'레인지 / 방향 불명확'},
+      {v:'down',      t:'하락',      s:-7, d:'하락 구조이나 확정 약함'},
+      {v:'strongDown',t:'강한 하락', s:-12,d:'15M BOS 하방 + 고점 하락'},
+    ]},
+  { key:'pd', label:'PD Array (위치)', max:15,
+    hint:'레인지=최근 스윙 로우~하이. 50% 아래=<b>디스카운트</b>(롱 유리), 위=<b>프리미엄</b>(숏 유리).',
+    checklist:[
+      '① 레인지를 정한다 — 추세를 만든 마지막 임펄스(최근 스윙 로우→하이)',
+      '② 그 레인지의 50% 선을 긋는다',
+      '③ 현재가가 50% 위/아래 어디인지 본다',
+      '⚠️ 추세 방향인데 불리한 자리(상승인데 프리미엄에서 롱)면 <b>마이너스</b> — 추격매수를 점수가 말려줍니다'
+    ],
+    options:[
+      {v:'discPlus', t:'디스카운트 + 근거', s:15, d:'50% 아래 + FVG/오더블록 겹침 → 롱 유리'},
+      {v:'disc',     t:'디스카운트',       s:9,  d:'50% 아래 (구체 근거는 없음)'},
+      {v:'equil',    t:'평형(50% 근처)',   s:0,  d:'50% ±10% — 애매한 자리, 점수 없음'},
+      {v:'prem',     t:'프리미엄',         s:-9, d:'50% 위 → 숏 유리'},
+      {v:'premPlus', t:'프리미엄 + 근거',  s:-15,d:'50% 위 + FVG/오더블록 겹침 → 숏 유리'},
+    ]},
+  { key:'smt', label:'SMT (상관 다이버전스)', max:12,
+    hint:'짝: MES↔MNQ, MGC↔SI, 달러(DXY)는 <b>역방향</b>. 직전 스윙 대비로 비교.',
+    options:[
+      {v:'bull', t:'강세 다이버전스', s:12, d:'한쪽만 신저점 → 하락 힘 소진 → 롱 우호'},
+      {v:'bullW',t:'약한 강세',      s:6,  d:'다이버전스 조짐은 있으나 불명확'},
+      {v:'none', t:'없음',           s:0,  d:'둘 다 같이 신고점/신저점 → 확증 없음'},
+      {v:'bearW',t:'약한 약세',      s:-6, d:'약세 다이버전스 조짐'},
+      {v:'bear', t:'약세 다이버전스', s:-12,d:'한쪽만 신고점 → 상승 힘 소진 → 숏 우호'},
+    ]},
+  { key:'session', label:'세션 위치', max:10,
+    hint:'방향이 아니라 <b>신뢰도</b> 팩터. 좋은 시간대면 구조 방향을 증폭, 죽은 시간대면 감점.',
+    options:[
+      {v:'kill',  t:'킬존 (런던·NY 오픈)', s:10, d:'유동성 풍부 — 신호 신뢰도 높음'},
+      {v:'normal',t:'일반 세션',          s:4,  d:'정상 거래 시간'},
+      {v:'lunch', t:'런치·한산',          s:-6, d:'점심·세션 사이 — 휩쏘 잦음'},
+      {v:'dead',  t:'죽은 구간',          s:-10,d:'거래량 極低 — 진입 자제'},
+    ]},
+  { key:'vix', label:'옵션 / VIX', max:8,
+    hint:'변동성 레짐. 안정=추세추종 유리, 급등=되돌림·휩쏘 많음.',
+    options:[
+      {v:'calm',  t:'안정 (낮음)',   s:8,  d:'추세 추종에 유리한 레짐'},
+      {v:'normal',t:'보통',          s:3,  d:'특이사항 없음'},
+      {v:'rising',t:'상승 중',       s:-4, d:'변동성 확대 — 사이즈 축소 고려'},
+      {v:'spike', t:'급등 (스파이크)',s:-8, d:'휩쏘 위험 — 진입 자제'},
+    ]},
+];
+const BIAS_MAX = BIAS_FACTORS.reduce((s,f)=>s+f.max,0); // 75
+
+// 7단계 구간 (경계: ±15, ±25, ±35)
+const BIAS_ZONES = [
+  { min:35,  max:75,  key:'strongLong',  label:'강한 롱',   tone:'good',
+    action:'구조·확증이 모두 정렬됐습니다. 롱 셋업만 보고, 사이즈를 크게 가져갈 구간입니다.' },
+  { min:25,  max:34,  key:'longEdge',    label:'롱 우위',   tone:'good',
+    action:'롱 쪽 우위가 있습니다. 디스카운트 되돌림에서 진입을 노리세요.' },
+  { min:15,  max:24,  key:'condLong',    label:'조건부 롱', tone:'neutral',
+    action:'종합 점수는 상승 쪽이지만 우위가 강하지 않습니다. 추가 확인을 기다립니다.' },
+  { min:-14, max:14,  key:'neutral',     label:'중립 관망', tone:'flat',
+    action:'방향 우위가 없습니다. 오늘은 쉬거나 최소 사이즈로만 대응하세요.' },
+  { min:-24, max:-15, key:'condShort',   label:'조건부 숏', tone:'neutral',
+    action:'종합 점수는 하락 쪽이지만 우위가 강하지 않습니다. 추가 확인을 기다립니다.' },
+  { min:-34, max:-25, key:'shortEdge',   label:'숏 우위',   tone:'bad',
+    action:'숏 쪽 우위가 있습니다. 프리미엄 되돌림에서 진입을 노리세요.' },
+  { min:-75, max:-35, key:'strongShort', label:'강한 숏',   tone:'bad',
+    action:'구조·확증이 모두 정렬됐습니다. 숏 셋업만 보고, 사이즈를 크게 가져갈 구간입니다.' },
+];
+
+let state = {
+  session: null,       // 로그인 사용자 (CLOUD 모드)
+  authMode: 'signin',  // signin | signup
+  authError: '',
+  authNotice: '',
+  authLoading: false,
+  syncing: false,
+  trades: [],
+  tab: 'log',
+  logGroup: 'day',     // day | week | month
+  statPeriod: 'week',  // 통계 탭 기간: day | week | month
+  biasTicker: 'MES',   // 바이어스 탭에서 보고 있는 종목
+  bias: {},            // { MES:{h1:'',m15:'',pd:'',smt:'',session:'',vix:'',date:''}, ... }
+  dayDetail: null,     // 캘린더에서 선택한 날짜(YYYY-MM-DD)
+  formOpen: false,
+  editingId: null,
+  exitFor: null,       // 청산 입력 중인 거래 id
+  exitForm: { price:'', qty:'', time:'' },
+  confirmDeleteId: null,
+  viewY: new Date().getFullYear(),
+  viewM: new Date().getMonth(),
+  form: emptyForm()
+};
+
+function emptyForm(){
+  return { date: todayISO(), ticker:'MES', customTicker:'', customMultiplier:'', direction:'long', qty:'1', entry:'', exit:'', stop:'', entryTime:'', setup:'', bias:'', exits:[] };
+}
+function todayISO(){ return new Date().toISOString().slice(0,10); }
+function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function fmt(n){ return (n<0?'-':'+') + '$' + Math.abs(n).toFixed(2); }
+function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+const BULL_IMG = "data:image/png;base64,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";
+// 황소 엠블럼 — 사용자가 준 이미지를 브론즈로 리컬러해 삽입 (color 인자는 무시)
+function bullSVG(_color){
+  return `<img src="${BULL_IMG}" alt="bull" style="width:100%;height:100%;object-fit:contain;display:block;">`;
+}
+
+// 이번 주(월~일) 성과 집계
+function computeWeekly(){
+  const [wkStart,wkEnd] = getWeekRange(new Date());
+  const calced = state.trades.map(t=>({...t,c:calcTrade(t)}))
+    .filter(t=>t.c && t.date>=wkStart && t.date<=wkEnd);
+  const count = calced.length;
+  const net = calced.reduce((s,t)=>s+t.c.net,0);
+  const withR = calced.filter(t=>t.c.rMultiple!=null);   // 손절가 있는 거래만 R 집계
+  const rSum = withR.reduce((s,t)=>s+t.c.rMultiple,0);
+  const wins = calced.filter(t=>t.c.win);
+  const winRate = count ? wins.length/count*100 : 0;
+  const grossWin = wins.reduce((s,t)=>s+t.c.net,0);
+  const grossLoss = Math.abs(calced.filter(t=>!t.c.win).reduce((s,t)=>s+t.c.net,0));
+  const pf = grossLoss>0 ? grossWin/grossLoss : (grossWin>0 ? Infinity : 0);
+  const avgR = withR.length ? rSum/withR.length : 0;
+  const byTicker = {};
+  withR.forEach(t=>{
+    const k = t.ticker==='CUSTOM' ? (t.customTicker||'커스텀') : t.ticker;
+    byTicker[k] = (byTicker[k]||0) + t.c.rMultiple;
+  });
+  let bestTicker=null, bestR=-Infinity;
+  Object.entries(byTicker).forEach(([k,v])=>{ if(v>bestR){ bestR=v; bestTicker=k; } });
+  return { count, net, rSum, winRate, pf, avgR, bestTicker, bestR, wkStart, wkEnd };
+}
+
+// 코칭 피드백 문구 생성
+function weeklyCoaching(w){
+  if(w.count===0){
+    return { tone:'empty', title:'이번 주 기록을 시작해요',
+      desc:'진입가·손절 예정가·청산가를 넣으면 거래별 RR과 이번 주 실현 R을 코칭해드려요.' };
+  }
+  const rTxt = (w.rSum>=0?'+':'') + w.rSum.toFixed(2) + 'R';
+  const winTxt = w.winRate.toFixed(0) + '%';
+  const bestTxt = (w.bestTicker && w.bestR>0)
+    ? `${w.bestTicker}이(가) +${w.bestR.toFixed(2)}R로 가장 좋아요. ` : '';
+  let tone, title, advice;
+  if(w.rSum >= 1){
+    tone='good'; title='리스크 대비 성과 양호';
+    advice='같은 손절 기준을 유지해보세요.';
+  } else if(w.rSum >= 0){
+    tone='neutral'; title='리스크 대비 성과 보통';
+    advice='수익은 지켰지만 폭이 작아요. 손익비(RR)를 키워보세요.';
+  } else {
+    tone='bad'; title='리스크 대비 성과 불량';
+    advice='손절 기준과 진입 근거를 다시 점검해보세요.';
+  }
+  const desc = `${rTxt}, 승률 ${winTxt}입니다. ${bestTxt}${advice}`;
+  return { tone, title, desc };
+}
+
+// 거래의 청산 내역을 표준 배열로 반환 (구버전 거래도 호환)
+function exitsOf(t){
+  if(Array.isArray(t.exits) && t.exits.length) return t.exits;
+  // 구버전: exit 필드 하나만 있던 거래 → 전량 청산 1건으로 간주
+  if(t.exit!=='' && t.exit!=null && !isNaN(parseFloat(t.exit))){
+    return [{ price:String(t.exit), qty:String(Math.max(1,parseInt(t.qty,10)||1)), time:'' }];
+  }
+  return [];
+}
+function isOpen(t){
+  const mult = t.ticker==='CUSTOM' ? (parseFloat(t.customMultiplier)||0) : MULT[t.ticker];
+  if(!mult) return false;
+  const qty = Math.max(1, parseInt(t.qty,10)||1);
+  const done = exitsOf(t).reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
+  return done < qty;
+}
+
+/* 손익 계산 — 부분 청산 지원.
+   각 청산분마다 (청산가−진입가)×방향×승수×수량 을 더하고,
+   수수료는 "실제 청산된 계약수"만큼만 차감. 미청산 잔량은 손익에 미포함. */
+function calcTrade(t){
+  const mult = t.ticker==='CUSTOM' ? (parseFloat(t.customMultiplier)||0) : MULT[t.ticker];
+  const qty = Math.max(1, parseInt(t.qty,10)||1);
+  const entry = parseFloat(t.entry);
+  const stopRaw = t.stop;
+  const stop = (stopRaw!==''&&stopRaw!=null) ? parseFloat(stopRaw) : null;
+  if (isNaN(entry) || !mult) return null;
+
+  const sign = t.direction==='long' ? 1 : -1;
+  const exits = exitsOf(t);
+  if(exits.length===0) return null;            // 아직 청산 없음 → 손익 미확정
+
+  let gross = 0, closedQty = 0, wsum = 0;
+  exits.forEach(e=>{
+    const p = parseFloat(e.price);
+    const q = Math.max(0, parseInt(e.qty,10)||0);
+    if(isNaN(p) || q<=0) return;
+    gross += (p-entry)*sign*mult*q;
+    closedQty += q;
+    wsum += p*q;                                // 평균 청산가용
+  });
+  if(closedQty===0) return null;
+
+  const avgExit = wsum/closedQty;
+  const commission = COMMISSION_PER_CONTRACT * closedQty;
+  const net = gross - commission;
+  /* 리스크 = 진입 시점에 "잃을 각오였던 금액" = |진입가−손절가| × 승수 × 청산계약수.
+     손절가가 없으면 리스크를 정의할 수 없음 → R·RR을 계산하지 않음(null).
+     (예전처럼 |gross|로 대체하면 R이 항상 ±1 근처가 되어 의미 없는 숫자가 됨) */
+  const hasStop = (stop!==null && !isNaN(stop) && Math.abs(entry-stop)>0);
+  const risk = hasStop ? Math.abs(entry-stop)*mult*closedQty : null;
+  const rr = hasStop && risk>0 ? Math.abs(gross)/risk : null;
+  const rMultiple = hasStop && risk>0 ? net/risk : null;
+  const openQty = qty - closedQty;
+  return { gross, net, risk, rr, rMultiple, commission, hasStop,
+           qty, closedQty, openQty, avgExit, partial: openQty>0,
+           win: net>0 };
+}
+function getWeekRange(d){
+  const dt=new Date(d); const dow=(dt.getDay()+6)%7;
+  const mon=new Date(dt); mon.setDate(dt.getDate()-dow);
+  const sun=new Date(mon); sun.setDate(mon.getDate()+6);
+  return [mon.toISOString().slice(0,10), sun.toISOString().slice(0,10)];
+}
+
+/* ---------- 로컬 캐시 (오프라인/즉시표시용, 사용자별) ---------- */
+function cacheKey(){ return STORE_KEY + (state.session ? ('_'+state.session.user.id) : ''); }
+function loadCache(){ try{ return JSON.parse(localStorage.getItem(cacheKey())||'[]'); }catch(e){ return []; } }
+function saveCache(){ try{ localStorage.setItem(cacheKey(), JSON.stringify(state.trades)); }catch(e){} }
+
+/* ---------- DB 행 <-> 앱 객체 변환 ---------- */
+function toRow(t){
+  return {
+    id: t.id, date: t.date, ticker: t.ticker,
+    custom_ticker: t.customTicker || '', custom_multiplier: t.customMultiplier || '',
+    direction: t.direction, qty: Math.max(1, parseInt(t.qty,10)||1),
+    entry: String(t.entry), exit: String(t.exit||''),
+    stop: (t.stop===null||t.stop===undefined) ? '' : String(t.stop),
+    entry_time: t.entryTime || '', setup: t.setup || '',
+    bias: (t.bias===''||t.bias==null) ? null : parseInt(t.bias,10),
+    exits: exitsOf(t)
+  };
+}
+function fromRow(r){
+  return {
+    id: r.id, date: r.date, ticker: r.ticker,
+    customTicker: r.custom_ticker || '', customMultiplier: r.custom_multiplier || '',
+    direction: r.direction, qty: r.qty==null?'1':String(r.qty),
+    entry: r.entry, exit: r.exit, stop: r.stop==null?'':r.stop,
+    entryTime: r.entry_time || '', setup: r.setup || '',
+    bias: (r.bias===null||r.bias===undefined) ? '' : String(r.bias),
+    exits: Array.isArray(r.exits) ? r.exits : []
+  };
+}
+
+/* ---------- 원격 동기화 ---------- */
+async function remoteLoad(){
+  if(!CLOUD || !state.session) return;
+  state.syncing = true; render();
+  const { data, error } = await sb.from('trades').select('*').order('date',{ascending:false});
+  state.syncing = false;
+  if(error){ console.error(error); render(); return; }
+  state.trades = (data||[]).map(fromRow).sort((a,b)=>b.date.localeCompare(a.date));
+  saveCache();
+  render();
+}
+async function remoteUpsert(record){
+  if(!CLOUD || !state.session) return;
+  const row = toRow(record); row.user_id = state.session.user.id;
+  const { error } = await sb.from('trades').upsert(row);
+  if(error){ alert('저장 실패: '+error.message); await remoteLoad(); }
+}
+async function remoteDelete(id){
+  if(!CLOUD || !state.session) return;
+  const { error } = await sb.from('trades').delete().eq('id', id);
+  if(error){ alert('삭제 실패: '+error.message); await remoteLoad(); }
+}
+async function remoteClear(){
+  if(!CLOUD || !state.session) return;
+  const { error } = await sb.from('trades').delete().eq('user_id', state.session.user.id);
+  if(error){ alert('전체 삭제 실패: '+error.message); await remoteLoad(); }
+}
+
+function computeStats(){
+  const calced = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
+  const total = calced.length;
+  const totalNet = calced.reduce((s,t)=>s+t.c.net,0);
+  const withR = calced.filter(t=>t.c.rMultiple!=null);
+  const totalR = withR.reduce((s,t)=>s+t.c.rMultiple,0);
+  const noStopCount = calced.length - withR.length;
+  const wins = calced.filter(t=>t.c.win), losses = calced.filter(t=>!t.c.win);
+  const winRate = total ? wins.length/total*100 : 0;
+  const grossWin = wins.reduce((s,t)=>s+t.c.net,0);
+  const grossLoss = Math.abs(losses.reduce((s,t)=>s+t.c.net,0));
+  const pf = grossLoss>0 ? grossWin/grossLoss : (grossWin>0 ? Infinity : 0);
+  const avgR = withR.length ? totalR/withR.length : 0;
+  const [wkStart,wkEnd] = getWeekRange(new Date());
+  const weekTrades = calced.filter(t=>t.date>=wkStart && t.date<=wkEnd);
+  const weekNet = weekTrades.reduce((s,t)=>s+t.c.net,0);
+  return { total, totalNet, totalR, winRate, pf, avgR, weekNet, weekCount: weekTrades.length, noStopCount, rCount: withR.length };
+}
+
+/* ---------- 바이어스 점수 엔진 ---------- */
+function biasOf(ticker){
+  const b = state.bias[ticker];
+  return b || { h1:'', m15:'', pd:'', smt:'', session:'', vix:'', date:'' };
+}
+function factorScore(fkey, value){
+  const f = BIAS_FACTORS.find(x=>x.key===fkey); if(!f) return 0;
+  const o = f.options.find(x=>x.v===value);
+  return o ? o.s : 0;
+}
+// 총점 계산. 규칙: 15M은 1H와 방향이 반대면 절반으로 감쇠(상사=1H 원칙)
+function computeBias(ticker){
+  const b = biasOf(ticker);
+  const parts = {};
+  BIAS_FACTORS.forEach(f=>{ parts[f.key] = factorScore(f.key, b[f.key]); });
+  if(parts.h1 !== 0 && parts.m15 !== 0 && Math.sign(parts.h1) !== Math.sign(parts.m15)){
+    parts.m15 = Math.round(parts.m15 / 2);   // 반대 방향이면 감쇠
+  }
+  const total = Object.values(parts).reduce((s,v)=>s+v,0);
+  const filled = BIAS_FACTORS.filter(f=>b[f.key]).length;
+  return { total, parts, filled, count: BIAS_FACTORS.length };
+}
+function zoneOf(total){
+  return BIAS_ZONES.find(z=>total>=z.min && total<=z.max) || BIAS_ZONES[3];
+}
+function loadBias(){
+  try{ state.bias = JSON.parse(localStorage.getItem(biasKey())||'{}'); }catch(e){ state.bias={}; }
+}
+function biasKey(){ return BIAS_KEY + (state.session ? ('_'+state.session.user.id) : ''); }
+function saveBias(){ try{ localStorage.setItem(biasKey(), JSON.stringify(state.bias)); }catch(e){} }
+
+// 바이어스 원격 동기화
+const BIAS_FIELDS = ['h1','m15','pd','smt','session','vix','date'];
+async function remoteBiasLoad(){
+  if(!CLOUD || !state.session) return;
+  const { data, error } = await sb.from('bias_state').select('*');
+  if(error){ console.error(error); return; }
+  const map={};
+  (data||[]).forEach(r=>{
+    const o={}; BIAS_FIELDS.forEach(f=>{ o[f]=r[f]||''; });
+    map[r.ticker]=o;
+  });
+  state.bias = map;
+  saveBias();
+  render();
+}
+async function remoteBiasUpsert(ticker){
+  if(!CLOUD || !state.session) return;
+  const b = biasOf(ticker);
+  const row = { user_id: state.session.user.id, ticker, updated_at: new Date().toISOString() };
+  BIAS_FIELDS.forEach(f=>{ row[f] = b[f] || ''; });
+  const { error } = await sb.from('bias_state').upsert(row, { onConflict:'user_id,ticker' });
+  if(error) console.error('바이어스 저장 실패:', error.message);
+}
+async function remoteBiasDelete(ticker){
+  if(!CLOUD || !state.session) return;
+  const { error } = await sb.from('bias_state').delete()
+    .eq('user_id', state.session.user.id).eq('ticker', ticker);
+  if(error) console.error('바이어스 삭제 실패:', error.message);
+}
+
+// 임의의 거래 배열에 대한 지표 계산 (기간별 통계에 재사용)
+function statsOf(list){
+  const calced = list.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
+  const count = calced.length;
+  const net = calced.reduce((s,t)=>s+t.c.net,0);
+  const rSum = calced.reduce((s,t)=>s+t.c.rMultiple,0);
+  const wins = calced.filter(t=>t.c.win);
+  const winRate = count ? wins.length/count*100 : 0;
+  const grossWin = wins.reduce((s,t)=>s+t.c.net,0);
+  const grossLoss = Math.abs(calced.filter(t=>!t.c.win).reduce((s,t)=>s+t.c.net,0));
+  const pf = grossLoss>0 ? grossWin/grossLoss : (grossWin>0 ? Infinity : 0);
+  const avgR = count ? rSum/count : 0;
+  const avgNet = count ? net/count : 0;
+  return { count, net, rSum, winRate, pf, avgR, avgNet };
+}
+// 통계 탭에서 보는 "현재 기간"의 날짜 범위
+function currentPeriodRange(period){
+  const now = new Date();
+  if(period==='day'){ const d=isoOf(now); return [d,d]; }
+  if(period==='month'){
+    const y=now.getFullYear(), m=now.getMonth();
+    return [isoOf(new Date(y,m,1)), isoOf(new Date(y,m+1,0))];
+  }
+  return getWeekRange(now); // week
+}
+function periodTitle(period){ return period==='day'?'오늘':period==='month'?'이번 달':'이번 주'; }
+
+function calendarMap(){
+  const map={};
+  state.trades.forEach(t=>{
+    const c=calcTrade(t); if(!c) return;
+    map[t.date]=map[t.date]||{net:0,count:0};
+    map[t.date].net+=c.net; map[t.date].count+=1;
+  });
+  return map;
+}
+
+/* ================= render ================= */
+function render(){
+  const root=document.getElementById('root');
+  if(CLOUD && !state.session){
+    root.innerHTML = `<div class="auth-wrap">${renderAuth()}</div>`;
+    return;
+  }
+  root.innerHTML =
+    `<div class="wrap">` +
+      renderHeader() + renderBanner() + renderTabs() +
+      (state.tab==='log' ? renderLog() : state.tab==='bias' ? renderBias() : state.tab==='calendar' ? renderCalendar() : renderStats()) +
+    `</div>` +
+    renderFab() +
+    (state.dayDetail ? renderDayModal() : '') +
+    (state.exitFor ? renderExitModal() : '') +
+    (state.formOpen ? renderModal() : '');
+  if(state.formOpen) updatePreview();
+}
+
+function renderAuth(){
+  const isSignup = state.authMode==='signup';
+  return `
+    <div class="center"><div class="logo" style="margin:0 auto;width:56px;height:56px;padding:9px;">${bullSVG('#c8952f')}</div></div>
+    <p class="auth-title">나의 매매일지</p>
+    <p class="auth-sub">${isSignup?'계정을 만들면 폰·컴퓨터에서 같은 기록을 볼 수 있어요':'로그인하면 어느 기기에서나 기록이 동기화돼요'}</p>
+    ${state.authError?`<div class="auth-err">${esc(state.authError)}</div>`:''}
+    ${state.authNotice?`<div class="auth-ok">${esc(state.authNotice)}</div>`:''}
+    <div class="field"><label>이메일</label>
+      <input type="email" id="auth-email" placeholder="you@example.com" autocomplete="email" /></div>
+    <div class="field"><label>비밀번호 (6자 이상)</label>
+      <input type="password" id="auth-pw" placeholder="••••••" autocomplete="${isSignup?'new-password':'current-password'}" /></div>
+    <button class="btn-save" style="width:100%;" ${state.authLoading?'disabled':''} onclick="submitAuth()">
+      ${state.authLoading?'<span class="spinner"></span>':(isSignup?'가입하기':'로그인')}
+    </button>
+    <p class="auth-switch">${isSignup?'이미 계정이 있으세요?':'처음이신가요?'}
+      <button onclick="toggleAuthMode()">${isSignup?'로그인':'회원가입'}</button></p>`;
+}
+
+function renderBanner(){
+  if(!CLOUD){
+    return `<div class="banner">⚠️ 클라우드 미설정 — 지금은 <b>이 기기에만</b> 저장돼요. 기기 간 동기화를 켜려면 설정 가이드를 참고하세요.</div>`;
+  }
+  return '';
+}
+
+function renderHeader(){
+  const right = CLOUD && state.session
+    ? `<div class="header-right">
+         <div class="sync-dot">${state.syncing?'동기화 중…':'☁︎ '+esc(state.session.user.email)}</div>
+         <button class="link-btn" onclick="signOut()">로그아웃</button>
+       </div>` : '';
+  return `<div class="header-top"><div class="logo">${bullSVG('#c8952f')}</div>
+    <div><h1>나의 매매일지</h1><p class="muted small" style="margin:2px 0 0;">기록하고, 리스크를 지켜요</p></div>
+    ${right}</div>`;
+}
+function renderTabs(){
+  const tabs=[['log','거래일지'],['bias','바이어스'],['calendar','캘린더'],['stats','통계']];
+  return `<div class="tabs">${tabs.map(([k,l])=>
+    `<button class="tab-btn ${state.tab===k?'active':''}" onclick="setTab('${k}')">${l}</button>`).join('')}</div>`;
+}
+function renderFab(){
+  if(state.formOpen) return '';
+  if(CLOUD && !state.session) return '';
+  return `<div class="fab-wrap"><div class="fab-inner">
+    <button class="fab" onclick="openNewForm()">＋ 새 거래 기록</button>
+  </div></div>`;
+}
+
+function renderCoaching(){
+  const w = computeWeekly();
+  const co = weeklyCoaching(w);
+  const toneColor = co.tone==='good' ? '#3fb96b' : co.tone==='bad' ? '#e5484d' : co.tone==='neutral' ? '#d9a441' : '#c8952f';
+  if(co.tone==='empty'){
+    return `<div class="coach-card empty">
+      <div class="coach-top"><span class="coach-label">이번 주 코칭</span>
+        <span class="coach-badge">${bullSVG('#c8952f')}</span></div>
+      <p class="coach-title" style="font-size:19px;">${co.title}</p>
+      <p class="coach-desc" style="max-width:100%;">${co.desc}</p>
+      <div class="coach-deco">${bullSVG(toneColor)}</div>
+    </div>`;
+  }
+  const rColor = w.rSum>=0 ? 'profit' : 'loss';
+  return `<div class="coach-card ${co.tone}">
+    <div class="coach-top"><span class="coach-label">이번 주 코칭</span>
+      <span class="coach-badge">${bullSVG('#c8952f')}</span></div>
+    <p class="coach-r-label">금주 실현 R · ${w.count}건</p>
+    <p class="coach-r serif ${rColor}">${w.rSum>=0?'+':''}${w.rSum.toFixed(2)}R</p>
+    <p class="coach-title serif">${co.title}</p>
+    <p class="coach-desc">${co.desc}</p>
+    <div class="coach-chips">
+      <span class="chip">WIN ${w.winRate.toFixed(0)}%</span>
+      <span class="chip">PF ${w.pf===Infinity?'∞':w.pf.toFixed(2)}</span>
+      <span class="chip">AVG ${w.avgR>=0?'+':''}${w.avgR.toFixed(2)}R</span>
+    </div>
+    <div class="coach-deco">${bullSVG(toneColor)}</div>
+  </div>`;
+}
+
+/* ---------- 날짜/그룹 유틸 ---------- */
+function ymd(str){ const [y,m,d]=str.split('-').map(Number); return new Date(y,m-1,d); }
+function isoOf(d){ return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function weekKeyOf(str){ const dt=ymd(str); const dow=(dt.getDay()+6)%7; dt.setDate(dt.getDate()-dow); return isoOf(dt); }
+function groupKeyOf(dateStr, g){ return g==='day' ? dateStr : g==='month' ? dateStr.slice(0,7) : weekKeyOf(dateStr); }
+function groupLabelOf(key, g){
+  if(g==='day'){ const d=ymd(key); return `${d.getMonth()+1}월 ${d.getDate()}일 (${WEEKDAYS[(d.getDay()+6)%7]})`; }
+  if(g==='month'){ const [y,m]=key.split('-'); return `${y}년 ${parseInt(m,10)}월`; }
+  const mon=ymd(key); const sun=new Date(mon); sun.setDate(mon.getDate()+6);
+  return `${mon.getMonth()+1}월 ${mon.getDate()}일 ~ ${sun.getMonth()+1}월 ${sun.getDate()}일`;
+}
+function groupTrades(g){
+  const groups=[]; const idx={};
+  state.trades.filter(t=>!isOpen(t)).forEach(t=>{   // 보유 중은 위 섹션에서 따로 표시
+    const c=calcTrade(t);
+    const key=groupKeyOf(t.date,g);
+    if(!(key in idx)){ idx[key]=groups.length; groups.push({key,trades:[],net:0,count:0,rSum:0}); }
+    const grp=groups[idx[key]];
+    grp.trades.push(t);
+    if(c){ grp.net+=c.net; grp.count++; if(c.rMultiple!=null) grp.rSum+=c.rMultiple; }
+  });
+  return groups;
+}
+
+/* ---------- 보유 중(미청산) 포지션 카드 ---------- */
+function renderOpenCard(t){
+  const mult = t.ticker==='CUSTOM' ? (parseFloat(t.customMultiplier)||0) : MULT[t.ticker];
+  const label = t.ticker==='CUSTOM' ? (esc(t.customTicker)||'커스텀') : t.ticker;
+  const qty = Math.max(1, parseInt(t.qty,10)||1);
+  const exits = exitsOf(t);
+  const closed = exits.reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
+  const openQty = qty - closed;
+  const entry = parseFloat(t.entry);
+  const stop = parseFloat(t.stop);
+  const plannedRisk = !isNaN(stop) ? Math.abs(entry-stop)*mult*openQty : null;
+  const c = calcTrade(t);   // 부분 청산이 있으면 지금까지 확정 손익
+  const meta=[];
+  if(t.entryTime) meta.push(`⏱ ${esc(t.entryTime)}`);
+  if(t.setup) meta.push(`<span class="tag">${esc(t.setup)}</span>`);
+  if(t.bias!=='' && t.bias!=null){
+    const bv=parseInt(t.bias,10);
+    if(!isNaN(bv)) meta.push(`<span class="tag">바이어스 ${bv>0?'+':''}${bv}</span>`);
+  }
+  return `<div class="card open">
+    <div class="trade-top">
+      <div class="trade-left"><span class="ticker-name">${label}</span>
+        <span class="badge ${t.direction}">${t.direction==='long'?'롱':'숏'}</span>
+        <span class="open-badge">보유 ${openQty}${closed?`/${qty}`:''}</span></div>
+      <div class="trade-actions">
+        <button class="icon-btn" onclick="openEditForm('${t.id}')">수정</button>
+        <button class="${state.confirmDeleteId===t.id?'icon-btn danger-active':'icon-btn'}" onclick="deleteTrade('${t.id}')">${state.confirmDeleteId===t.id?'확인':'삭제'}</button>
+      </div>
+    </div>
+    <p class="trade-meta">${t.date}</p>
+    ${meta.length?`<p class="day-meta">${meta.join('')}</p>`:''}
+    <div class="trade-bottom">
+      <p class="muted small">진입 ${esc(t.entry)}${t.stop!==''?` · 손절 ${esc(t.stop)}`:''}${plannedRisk!=null?` · 리스크 $${plannedRisk.toFixed(2)}`:''}</p>
+      <button class="btn-exit" onclick="openExit('${t.id}')">청산 기록</button>
+    </div>
+    ${exits.length? exits.map((e,i)=>`<div class="exit-row">
+        <span>청산 ${i+1} · ${esc(e.price)} × ${esc(e.qty)}계약${e.time?` · ${esc(e.time)}`:''}</span>
+        <span><span class="muted" style="cursor:pointer;" onclick="removeExit('${t.id}',${i})">삭제</span></span>
+      </div>`).join('') : ''}
+    ${c? `<div class="exit-row"><span>부분 실현 손익</span>
+      <span class="${c.net>=0?'profit':'loss'}" style="font-weight:800;">${fmt(c.net)}${c.rMultiple!=null?` · ${c.rMultiple>=0?'+':''}${c.rMultiple.toFixed(2)}R`:''}</span></div>`:''}
+  </div>`;
+}
+
+/* ---------- 청산 입력 모달 ---------- */
+function renderExitModal(){
+  const t = state.trades.find(x=>x.id===state.exitFor);
+  if(!t) return '';
+  const label = t.ticker==='CUSTOM' ? (esc(t.customTicker)||'커스텀') : t.ticker;
+  const qty = Math.max(1, parseInt(t.qty,10)||1);
+  const closed = exitsOf(t).reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
+  const openQty = qty - closed;
+  const f = state.exitForm;
+  const mult = t.ticker==='CUSTOM' ? (parseFloat(t.customMultiplier)||0) : MULT[t.ticker];
+  const price = parseFloat(f.price);
+  const q = Math.max(0, parseInt(f.qty,10)||0);
+  const sign = t.direction==='long'?1:-1;
+  let preview = '<span class="muted small">청산가와 수량을 입력하면 계산해드려요.</span>';
+  if(!isNaN(price) && q>0 && mult){
+    const g=(price-parseFloat(t.entry))*sign*mult*q;
+    const n=g-COMMISSION_PER_CONTRACT*q;
+    preview = `<span class="muted small">이번 청산 손익</span>
+      <span class="serif" style="font-weight:800;"><span class="${n>=0?'profit':'loss'}">${fmt(n)}</span></span>`;
+  }
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeExit()">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>${label} 청산 기록</h2>
+        <button class="close-btn" onclick="closeExit()">✕</button>
+      </div>
+      <div class="preview-box" style="margin-bottom:14px;">
+        <span class="muted small">진입 ${esc(t.entry)} · ${t.direction==='long'?'롱':'숏'} · 보유 ${openQty}계약</span>
+        <span class="open-badge">OPEN</span>
+      </div>
+      <div class="two-col">
+        <div class="field">
+          <label>청산가</label>
+          <input type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.price)}" oninput="state.exitForm.price=this.value; render();" />
+        </div>
+        <div class="field">
+          <label>청산 계약 수 (최대 ${openQty})</label>
+          <select onchange="state.exitForm.qty=this.value; render();">
+            ${Array.from({length:openQty},(_,i)=>i+1).map(n=>
+              `<option value="${n}" ${String(f.qty)===String(n)?'selected':''}>${n}계약${n===openQty?' (전량)':''}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>청산 시간 (선택)</label>
+        <input type="time" value="${esc(f.time)}" oninput="state.exitForm.time=this.value" />
+      </div>
+      <div class="preview-box">${preview}</div>
+      <div class="modal-btns">
+        <button class="btn-cancel" onclick="closeExit()">취소</button>
+        <button class="btn-save" onclick="submitExit()">청산 저장</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------- 거래 카드 (목록·날짜상세 공용) ---------- */
+function renderTradeCard(t){
+  const c=calcTrade(t); if(!c) return '';
+  const label = t.ticker==='CUSTOM' ? (esc(t.customTicker)||'커스텀') : t.ticker;
+  const delLabel = state.confirmDeleteId===t.id ? '확인' : '삭제';
+  const delCls = state.confirmDeleteId===t.id ? 'icon-btn danger-active' : 'icon-btn';
+  const meta=[];
+  if(t.entryTime) meta.push(`⏱ ${esc(t.entryTime)}`);
+  if(t.setup) meta.push(`<span class="tag">${esc(t.setup)}</span>`);
+  if(t.bias!=='' && t.bias!=null){
+    const bv=parseInt(t.bias,10);
+    if(!isNaN(bv)) meta.push(`<span class="tag">바이어스 ${bv>0?'+':''}${bv} · ${zoneOf(bv).label}</span>`);
+  }
+  return `<div class="card">
+    <div class="trade-top">
+      <div class="trade-left"><span class="ticker-name">${label}</span>
+        <span class="badge ${t.direction}">${t.direction==='long'?'롱':'숏'}</span>
+        ${c.qty>1?`<span class="muted small">×${c.qty}</span>`:''}</div>
+      <div class="trade-actions">
+        <button class="icon-btn" onclick="openEditForm('${t.id}')">수정</button>
+        <button class="${delCls}" onclick="deleteTrade('${t.id}')">${delLabel}</button>
+      </div>
+    </div>
+    <p class="trade-meta">${t.date}</p>
+    ${meta.length?`<p class="day-meta">${meta.join('')}</p>`:''}
+    <div class="trade-bottom">
+      <p class="muted small">진입 ${esc(t.entry)} · 청산 ${exitsOf(t).length>1?`평균 ${c.avgExit.toFixed(2)} (${exitsOf(t).length}회 분할)`:esc(t.exit||(exitsOf(t)[0]||{}).price||'')}${t.stop!==''?` · 손절 ${esc(t.stop)}`:''}</p>
+      <div style="text-align:right;">
+        <p class="serif" style="font-weight:800;margin:0;">
+          <span class="${c.net>=0?'profit':'loss'}">${fmt(c.net)}</span></p>
+        <p class="muted small" style="margin:2px 0 0;">${c.rMultiple!=null?`RR 1:${c.rr.toFixed(2)} · ${c.rMultiple>=0?'+':''}${c.rMultiple.toFixed(2)}R`:`<span style="color:var(--accent);">R 없음 (손절가 미입력)</span>`}</p>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderLog(){
+  const s=computeStats();
+  let html = renderCoaching() + `<div class="grid-2">
+    <div class="card"><p class="stat-label">누적 순수익</p>
+      <p class="stat-value serif ${s.totalNet>=0?'profit':'loss'}">${fmt(s.totalNet)}</p>
+      <p class="muted small" style="margin:4px 0 0;">전체 ${s.total}건</p></div>
+    <div class="card"><p class="stat-label">누적 실현 R</p>
+      <p class="stat-value serif ${s.totalR>=0?'profit':'loss'}">${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R</p>
+      <p class="muted small" style="margin:4px 0 0;">승률 ${s.winRate.toFixed(0)}%</p></div>
+  </div>`;
+
+  // 보유 중 포지션 섹션
+  const openTrades = state.trades.filter(isOpen);
+  if(openTrades.length){
+    html += `<div class="sec-head"><span class="t">보유 중</span>
+      <span class="muted small">${openTrades.length}건 · 청산가를 넣으면 손익이 확정돼요</span></div>`;
+    html += openTrades.map(renderOpenCard).join('');
+  }
+
+  const groupBtns=[['day','일별'],['week','주별'],['month','월별']];
+  html += `<div class="logbar">
+    <div class="subseg">${groupBtns.map(([k,l])=>
+      `<button class="${state.logGroup===k?'active':''}" onclick="setLogGroup('${k}')">${l}</button>`).join('')}</div>
+    ${state.trades.length?`<button class="exp-btn" onclick="exportForAnalysis()">📋 분석용 복사</button>`:''}
+  </div>`;
+
+  if(state.trades.length===0){
+    html += `<div class="card center pad"><p class="muted small">아직 기록된 거래가 없어요.</p><p class="muted small">오늘 거래를 기록해보세요.</p></div>`;
+  } else {
+    html += groupTrades(state.logGroup).map(grp=>{
+      const head = `<div class="grp-head">
+        <span class="grp-label">${groupLabelOf(grp.key, state.logGroup)}</span>
+        <span class="grp-sub ${grp.net>=0?'profit':'loss'}">${fmt(grp.net)} · ${grp.count}건 · ${grp.rSum>=0?'+':''}${grp.rSum.toFixed(2)}R</span>
+      </div>`;
+      return head + grp.trades.map(renderTradeCard).join('');
+    }).join('');
+  }
+  return html;
+}
+
+// 폼에서 현재 종목의 바이어스 점수를 안내 (바이어스 탭에서 입력해둔 값)
+function biasHintForForm(){
+  const tk = state.form.ticker;
+  if(tk==='CUSTOM') return '바이어스 탭에서 점수를 매긴 뒤 여기에 적으면, 나중에 점수 구간별 성과를 검증할 수 있어요.';
+  const { total, filled } = computeBias(tk);
+  if(!filled) return `바이어스 탭에서 ${tk} 점수를 먼저 매기면 자동으로 채워집니다.`;
+  const z = zoneOf(total);
+  return `현재 ${tk} 바이어스: <b>${total>0?'+':''}${total}점 · ${z.label}</b> <button type="button" class="link-btn" style="color:var(--accent);" onclick="applyBiasToForm()">이 값 넣기</button>`;
+}
+function applyBiasToForm(){
+  const tk = state.form.ticker;
+  if(tk==='CUSTOM') return;
+  const { total, filled } = computeBias(tk);
+  if(!filled) return;
+  state.form.bias = String(total);
+  render();
+}
+
+/* ---------- 바이어스 점수 탭 ---------- */
+function renderBias(){
+  const tk = state.biasTicker;
+  const b = biasOf(tk);
+  const { total, parts, filled, count } = computeBias(tk);
+  const z = zoneOf(total);
+  // 미터 핀 위치 (-75..+75 → 0..100%)
+  const pin = ((total + BIAS_MAX) / (BIAS_MAX*2)) * 100;
+  const tickers = TICKERS.filter(t=>t!=='CUSTOM');
+
+  let html = `<div class="logbar">
+    <div class="subseg">${tickers.map(t=>
+      `<button class="${tk===t?'active':''}" onclick="setBiasTicker('${t}')">${t}</button>`).join('')}</div>
+    ${filled? `<button class="exp-btn" onclick="resetBias()">초기화</button>`:''}
+  </div>`;
+
+  // 종합 판정 카드
+  html += `<div class="coach-card ${z.tone==='flat'?'empty':z.tone}">
+    <div class="coach-top"><span class="coach-label">${tk} · 종합 바이어스</span>
+      <span class="coach-badge">${bullSVG('#c8952f')}</span></div>
+    <p class="bias-verdict ${z.tone}">${z.label}</p>
+    <p class="bias-sub" style="margin-top:8px;">${filled}/${count} 팩터 입력됨${b.date?` · ${b.date}`:''}${CLOUD&&state.session?' · ☁︎ 동기화됨':''}</p>
+    <p class="bias-total serif ${total>0?'profit':total<0?'loss':'muted'}">${total>0?'+':''}${total}<span style="font-size:15px;font-weight:600;color:var(--muted);"> / ±${BIAS_MAX}점</span></p>
+    <div class="meter"><div class="meter-pin" style="left:${pin.toFixed(1)}%;"></div></div>
+    <div class="meter-labels"><span>강한 숏 −75</span><span>중립 0</span><span>강한 롱 +75</span></div>
+    <p class="coach-action bias-action">${filled? z.action : '아래에서 팩터를 선택하면 점수가 계산됩니다.'}</p>
+  </div>`;
+
+  // 팩터 입력
+  html += `<div class="card">`;
+  BIAS_FACTORS.forEach(f=>{
+    const val = b[f.key]||'';
+    const raw = factorScore(f.key, val);
+    const eff = parts[f.key];
+    const damped = raw!==eff;
+    const sel = f.options.find(o=>o.v===val);
+    html += `<div class="fac">
+      <div class="fac-top">
+        <span class="fac-name">${f.label}</span>
+        <span class="fac-pts ${eff>0?'profit':eff<0?'loss':'muted'}">${val? (eff>0?'+':'')+eff : '–'} <span class="muted" style="font-weight:400;">/ ±${f.max}</span></span>
+      </div>
+      <select onchange="setBiasFactor('${f.key}', this.value)">
+        <option value="">— 선택 —</option>
+        ${f.options.map(o=>`<option value="${o.v}" ${val===o.v?'selected':''}>${o.t} (${o.s>0?'+':''}${o.s})</option>`).join('')}
+      </select>
+      ${sel?`<p class="fac-desc">${sel.d}</p>`:''}
+      <p class="fac-hint">${f.hint}${damped?` <span style="color:var(--accent);">· 1H와 반대라 절반 감쇠(${raw}→${eff})</span>`:''}</p>
+      ${f.checklist?`<details style="margin-top:6px;">
+        <summary style="font-size:11px;color:var(--accent);cursor:pointer;">판정 절차 보기</summary>
+        <ol style="font-size:11px;color:var(--muted);line-height:1.7;margin:6px 0 0;padding-left:16px;">
+          ${f.checklist.map(s=>`<li>${s}</li>`).join('')}
+        </ol></details>`:''}
+    </div>`;
+  });
+  html += `</div>`;
+
+  // 구간표
+  html += `<div class="card">
+    <p style="font-weight:700;font-size:13px;margin:0 0 6px;">전체 판정 구간 · 7단계</p>
+    ${BIAS_ZONES.map(zz=>`<div class="zone-row ${zz.key===z.key&&filled?'here':''}">
+      <span>${zz.label}</span><span class="muted">${zz.min>0?'+':''}${zz.min} ~ ${zz.max>0?'+':''}${zz.max}</span>
+    </div>`).join('')}
+    <p class="fac-hint" style="margin-top:10px;">구조(1H+15M)는 최대 ±30점이라 <b>구조만으로는 '강한' 구간(±35)에 닿지 않습니다.</b> PD Array·SMT 같은 확증이 붙어야 강한 신호가 나오도록 설계했습니다.</p>
+  </div>`;
+
+  return html;
+}
+
+/* ---------- 캘린더 날짜 상세 모달 ---------- */
+function renderDayModal(){
+  const date=state.dayDetail;
+  const dayTrades=state.trades.filter(t=>t.date===date);
+  const net=dayTrades.reduce((s,t)=>{const c=calcTrade(t);return s+(c?c.net:0);},0);
+  const rSum=dayTrades.reduce((s,t)=>{const c=calcTrade(t);return s+((c&&c.rMultiple!=null)?c.rMultiple:0);},0);
+  const d=ymd(date);
+  const title=`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일 (${WEEKDAYS[(d.getDay()+6)%7]})`;
+  return `<div class="modal-overlay" style="z-index:28;" onclick="if(event.target===this) closeDay()">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>${title}</h2>
+        <button class="close-btn" onclick="closeDay()">✕</button>
+      </div>
+      <div class="preview-box" style="margin-bottom:14px;">
+        <span class="muted small">그날 순손익 · 실현 R · 거래수</span>
+        <span class="serif" style="font-weight:800;"><span class="${net>=0?'profit':'loss'}">${fmt(net)} · ${rSum>=0?'+':''}${rSum.toFixed(2)}R · ${dayTrades.length}건</span></span>
+      </div>
+      ${dayTrades.length?dayTrades.map(t=>isOpen(t)?renderOpenCard(t):renderTradeCard(t)).join(''):`<div class="card center pad"><p class="muted small">이 날짜에는 거래가 없어요.</p></div>`}
+    </div>
+  </div>`;
+}
+
+function renderCalendar(){
+  const y=state.viewY, m=state.viewM;
+  const first=new Date(y,m,1);
+  const startWd=(first.getDay()+6)%7;
+  const daysInMonth=new Date(y,m+1,0).getDate();
+  const cells=[];
+  for(let i=0;i<startWd;i++) cells.push(null);
+  for(let d=1; d<=daysInMonth; d++) cells.push(d);
+  while(cells.length%7!==0) cells.push(null);
+  const map=calendarMap();
+  const prefix = `${y}-${String(m+1).padStart(2,'0')}`;
+  let monthNet=0, monthCount=0;
+  Object.entries(map).forEach(([date,v])=>{ if(date.startsWith(prefix)){ monthNet+=v.net; monthCount+=v.count; } });
+
+  return `<div class="card">
+    <div class="cal-nav">
+      <button onclick="navMonth(-1)">‹</button>
+      <span class="cal-title">${y}년 ${m+1}월</span>
+      <button onclick="navMonth(1)">›</button>
+    </div>
+    <p class="serif" style="font-size:22px;font-weight:800;margin:6px 0 0;">
+      <span class="${monthNet>=0?'profit':'loss'}">${fmt(monthNet)}</span></p>
+    <p class="muted small" style="margin:2px 0 10px;">${monthCount}건</p>
+    <div class="cal-grid">${WEEKDAYS.map(w=>`<div class="cal-wd">${w}</div>`).join('')}</div>
+    <div class="cal-grid">
+      ${cells.map(d=>{
+        if(d===null) return '<div></div>';
+        const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const entry = map[dateStr];
+        let style='';
+        if(entry) style = entry.net>=0 ? 'background:var(--profit-bg);' : 'background:var(--loss-bg);';
+        const vColor = entry ? (entry.net>=0?'profit':'loss') : '';
+        const click = entry ? `class="cal-cell clickable" onclick="openDay('${dateStr}')"` : `class="cal-cell"`;
+        return `<div ${click} style="${style}"><div class="d">${d}</div>${entry?`<div class="v ${vColor}">${Math.round(entry.net)}</div>`:''}</div>`;
+      }).join('')}
+    </div>
+  </div>`;
+}
+
+function chartSVG(){
+  const sorted = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort((a,b)=>a.date.localeCompare(b.date));
+  if(sorted.length===0) return `<p class="muted small center pad">거래를 기록하면 그래프가 나타나요.</p>`;
+  let cum=0;
+  const data = sorted.map(t=>{ cum+=t.c.net; return {date:t.date.slice(5), cum:Number(cum.toFixed(2))}; });
+  const w=300,h=150,pad=30;
+  const values=data.map(d=>d.cum);
+  const min=Math.min(0,...values), max=Math.max(0,...values);
+  const range=(max-min)||1;
+  const stepX = data.length>1 ? (w-2*pad)/(data.length-1) : 0;
+  const xy = data.map((d,i)=>{
+    const x=pad+i*stepX;
+    const y=h-pad-((d.cum-min)/range)*(h-2*pad);
+    return {x,y};
+  });
+  const pts = xy.map(p=>`${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const zeroY = h-pad-((0-min)/range)*(h-2*pad);
+  const last = data[data.length-1];
+  const color = last.cum>=0 ? 'var(--profit)' : 'var(--loss)';
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg">
+    <line x1="${pad}" y1="${zeroY.toFixed(1)}" x2="${w-pad}" y2="${zeroY.toFixed(1)}" stroke="#28303c" stroke-dasharray="3,3"/>
+    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"/>
+    ${xy.map(p=>`<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.4" fill="${color}"/>`).join('')}
+    <text x="${pad}" y="${h-8}" font-size="9" fill="#8b93a1">${data[0].date}</text>
+    <text x="${w-pad}" y="${h-8}" font-size="9" fill="#8b93a1" text-anchor="end">${last.date}</text>
+  </svg>`;
+}
+
+function renderStats(){
+  const p = state.statPeriod;
+  const [ps,pe] = currentPeriodRange(p);
+  const cur = statsOf(state.trades.filter(t=>t.date>=ps && t.date<=pe));
+  const clearLabel = state.confirmDeleteId==='ALL' ? '정말 전체 삭제할까요? (다시 탭)' : '전체 기록 삭제';
+  const pBtns=[['day','일별'],['week','주별'],['month','월별']];
+
+  const openCnt = state.trades.filter(isOpen).length;
+  let html = `<div class="logbar">
+    <div class="subseg">${pBtns.map(([k,l])=>
+      `<button class="${p===k?'active':''}" onclick="setStatPeriod('${k}')">${l}</button>`).join('')}</div>
+  </div>`;
+  if(openCnt){
+    html += `<div class="banner">보유 중 ${openCnt}건은 손익이 확정되지 않아 통계에서 제외됩니다.</div>`;
+  }
+  const allStats = computeStats();
+  if(allStats.noStopCount){
+    html += `<div class="banner">손절가가 없는 거래 ${allStats.noStopCount}건은 R을 계산할 수 없어 <b>R 통계에서만</b> 제외됩니다(손익 금액은 반영).</div>`;
+  }
+
+  html += `<div class="grid-2">
+    <div class="card"><p class="stat-label">${periodTitle(p)} 순수익</p>
+      <p class="stat-value serif ${cur.net>=0?'profit':'loss'}">${fmt(cur.net)}</p>
+      <p class="muted small" style="margin:4px 0 0;">${cur.count}건</p></div>
+    <div class="card"><p class="stat-label">${periodTitle(p)} 실현 R</p>
+      <p class="stat-value serif ${cur.rSum>=0?'profit':'loss'}">${cur.rSum>=0?'+':''}${cur.rSum.toFixed(2)}R</p>
+      <p class="muted small" style="margin:4px 0 0;">평균 ${cur.avgR>=0?'+':''}${cur.avgR.toFixed(2)}R</p></div>
+    <div class="card"><p class="stat-label">승률</p>
+      <p class="stat-value serif">${cur.winRate.toFixed(0)}%</p>
+      <p class="muted small" style="margin:4px 0 0;">Profit Factor ${cur.pf===Infinity?'∞':cur.pf.toFixed(2)}</p></div>
+    <div class="card"><p class="stat-label">거래당 평균 손익</p>
+      <p class="stat-value serif ${cur.avgNet>=0?'profit':'loss'}">${cur.count?fmt(cur.avgNet):'-'}</p></div>
+  </div>`;
+
+  html += `<div class="card">
+    <p style="font-weight:700;font-size:13px;margin:0 0 8px;">누적 순수익 흐름 (전체)</p>
+    ${chartSVG()}
+  </div>`;
+
+  // 기간별 성과 비교 (선택한 단위로 나눠 각각의 지표)
+  if(state.trades.length>0){
+    const groups = groupTrades(p).slice(0,12);
+    html += `<div class="card">
+      <p style="font-weight:700;font-size:13px;margin:0 0 4px;">${p==='day'?'일별':p==='week'?'주별':'월별'} 성과</p>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <tr style="color:var(--muted);text-align:right;">
+          <th style="text-align:left;font-weight:600;padding:6px 0;">기간</th>
+          <th style="font-weight:600;">순손익</th><th style="font-weight:600;">승률</th><th style="font-weight:600;">R</th>
+        </tr>
+        ${groups.map(g=>{
+          const gs=statsOf(g.trades);
+          return `<tr style="border-top:1px solid var(--border);text-align:right;">
+            <td style="text-align:left;padding:8px 0;">${groupLabelOf(g.key,p)}</td>
+            <td class="${gs.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(gs.net)}</td>
+            <td>${gs.winRate.toFixed(0)}%</td>
+            <td class="${gs.rSum>=0?'profit':'loss'}" style="font-weight:700;">${gs.rSum>=0?'+':''}${gs.rSum.toFixed(1)}</td>
+          </tr>`;
+        }).join('')}
+      </table>
+    </div>`;
+  }
+
+  // 바이어스 점수 구간별 성과 검증 (가중치가 맞는지 데이터로 확인)
+  const scored = state.trades.filter(t=>t.bias!=='' && t.bias!=null && !isNaN(parseInt(t.bias,10)));
+  if(scored.length>0){
+    const byZone = BIAS_ZONES.map(z=>{
+      const list = scored.filter(t=>{ const v=parseInt(t.bias,10); return v>=z.min && v<=z.max; });
+      return { z, s: statsOf(list) };
+    }).filter(r=>r.s.count>0);
+    html += `<div class="card">
+      <p style="font-weight:700;font-size:13px;margin:0 0 4px;">바이어스 점수 구간별 성과</p>
+      <p class="fac-hint" style="margin:0 0 8px;">'강한' 구간이 '조건부'보다 성적이 나쁘면 가중치를 조정할 신호예요. 표본 20건 이상부터 참고하세요.</p>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <tr style="color:var(--muted);text-align:right;">
+          <th style="text-align:left;font-weight:600;padding:6px 0;">구간</th>
+          <th style="font-weight:600;">건수</th><th style="font-weight:600;">승률</th>
+          <th style="font-weight:600;">평균R</th><th style="font-weight:600;">순손익</th>
+        </tr>
+        ${byZone.map(r=>`<tr style="border-top:1px solid var(--border);text-align:right;">
+          <td style="text-align:left;padding:8px 0;">${r.z.label}</td>
+          <td>${r.s.count}</td>
+          <td>${r.s.winRate.toFixed(0)}%</td>
+          <td class="${r.s.avgR>=0?'profit':'loss'}" style="font-weight:700;">${r.s.avgR>=0?'+':''}${r.s.avgR.toFixed(2)}</td>
+          <td class="${r.s.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(r.s.net)}</td>
+        </tr>`).join('')}
+      </table>
+      <p class="fac-hint" style="margin-top:8px;">점수 기록된 거래 ${scored.length}건 / 전체 ${state.trades.length}건</p>
+    </div>`;
+  }
+
+  html += state.trades.length>0 ? `<button class="clear-all" onclick="clearAll()">${clearLabel}</button>` : '';
+  return html;
+}
+
+/* ---------- modal ---------- */
+function renderModal(){
+  const f=state.form;
+  return `<div class="modal-overlay" onclick="if(event.target===this) closeForm()">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>${state.editingId?'거래 수정하기':'새 거래를 기록해요'}</h2>
+        <button class="close-btn" onclick="closeForm()">✕</button>
+      </div>
+      <div class="field">
+        <label>날짜</label>
+        <input type="date" value="${f.date}" oninput="state.form.date=this.value" />
+      </div>
+      <div class="field">
+        <label>티커</label>
+        <div class="btn-row" id="ticker-buttons">${renderTickerButtons()}</div>
+        <div id="custom-ticker-fields">${f.ticker==='CUSTOM'?renderCustomFields():''}</div>
+      </div>
+      <div class="two-col">
+        <div class="field">
+          <label>방향</label>
+          <div class="btn-row" id="direction-buttons">${renderDirectionButtons()}</div>
+        </div>
+        <div class="field">
+          <label>계약 수</label>
+          <select onchange="state.form.qty=this.value; updatePreview();">
+            ${Array.from({length:10},(_,i)=>i+1).map(n=>`<option value="${n}" ${String(f.qty)===String(n)?'selected':''}>${n}계약</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="field">
+          <label>진입가</label>
+          <input type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.entry)}" oninput="state.form.entry=this.value; updatePreview();" />
+        </div>
+        <div class="field">
+          <label>청산가 <span class="muted">(비우면 보유 중)</span></label>
+          <input type="text" inputmode="decimal" placeholder="미입력 = 보유 중" value="${esc(f.exit)}" oninput="state.form.exit=this.value; updatePreview();" />
+        </div>
+      </div>
+      <div class="field">
+        <label>손절 세팅가 <span style="color:var(--accent);">*필수</span></label>
+        <input type="text" inputmode="decimal" placeholder="진입 시 잡은 손절가" value="${esc(f.stop)}" oninput="state.form.stop=this.value; updatePreview();" />
+        <p class="fac-hint" style="margin-top:5px;">R(리스크 대비 수익)을 계산하려면 "얼마를 잃을 각오였나"가 필요해요. 손절 없이는 R이 의미를 잃습니다.</p>
+      </div>
+      <div class="two-col">
+        <div class="field">
+          <label>진입 시간 (선택)</label>
+          <input type="time" value="${esc(f.entryTime)}" oninput="state.form.entryTime=this.value" />
+        </div>
+        <div class="field">
+          <label>매매 근거/셋업 (선택)</label>
+          <input type="text" placeholder="예: 돌파, 눌림목" value="${esc(f.setup)}" oninput="state.form.setup=this.value" />
+        </div>
+      </div>
+      <div class="field">
+        <label>진입 시 바이어스 점수 (선택 · −75~+75)</label>
+        <input type="text" inputmode="numeric" placeholder="예: -17" value="${esc(f.bias)}" oninput="state.form.bias=this.value" />
+        <p class="fac-hint" style="margin-top:5px;">${biasHintForForm()}</p>
+      </div>
+      <div class="preview-box" id="preview"></div>
+      <div class="modal-btns">
+        <button class="btn-cancel" onclick="closeForm()">취소</button>
+        <button class="btn-save" id="save-btn" onclick="submitForm()">기록 저장하기</button>
+      </div>
+    </div>
+  </div>`;
+}
+function renderTickerButtons(){
+  return TICKERS.map(tk=>
+    `<button class="opt-btn ${state.form.ticker===tk?'active':''}" onclick="selectTicker('${tk}')">${tk==='CUSTOM'?'직접입력':tk}</button>`
+  ).join('');
+}
+function renderCustomFields(){
+  return `<div class="two-col" style="margin-top:8px;">
+    <input type="text" placeholder="티커명" value="${esc(state.form.customTicker)}" oninput="state.form.customTicker=this.value" />
+    <input type="text" inputmode="decimal" placeholder="포인트당 $" value="${esc(state.form.customMultiplier)}" oninput="state.form.customMultiplier=this.value; updatePreview();" />
+  </div>`;
+}
+function renderDirectionButtons(){
+  return `<button class="opt-btn ${state.form.direction==='long'?'active':''}" onclick="selectDirection('long')">롱</button>
+    <button class="opt-btn ${state.form.direction==='short'?'active':''}" onclick="selectDirection('short')">숏</button>`;
+}
+function updatePreview(){
+  const f = state.form;
+  const c = calcTrade(f);
+  const el = document.getElementById('preview');
+  const btn = document.getElementById('save-btn');
+  if(!el) return;
+  const mult = f.ticker==='CUSTOM' ? (parseFloat(f.customMultiplier)||0) : MULT[f.ticker];
+  const entryVal = parseFloat(f.entry);
+  const stopVal = parseFloat(f.stop);
+  const stopOk = !isNaN(stopVal) && !isNaN(entryVal) && Math.abs(entryVal-stopVal)>0;
+  const entryOk = !isNaN(entryVal) && mult;
+  // 손절가 필수 — 없으면 저장 불가
+  if(entryOk && !stopOk){
+    el.innerHTML = `<span class="muted small" style="color:var(--accent);">손절 세팅가를 입력해주세요 (R 계산에 필요)</span>`;
+    if(btn) btn.disabled=true;
+    return;
+  }
+  if(c){
+    el.innerHTML = `<span class="muted small">예상 순손익 · RR</span>
+      <span class="serif" style="font-weight:800;"><span class="${c.net>=0?'profit':'loss'}">${fmt(c.net)}${c.rr!=null?` · 1:${c.rr.toFixed(2)}`:''}</span></span>`;
+    if(btn){ btn.disabled=false; btn.textContent = state.editingId?'수정 저장':'기록 저장하기'; }
+  } else if(entryOk){
+    // 청산가 없이 진입만 → 보유 중으로 저장 가능
+    const qty = Math.max(1, parseInt(f.qty,10)||1);
+    const stop = parseFloat(f.stop);
+    const riskTxt = !isNaN(stop)
+      ? `계획 리스크 $${(Math.abs(parseFloat(f.entry)-stop)*mult*qty).toFixed(2)}`
+      : '손절가를 넣으면 리스크가 계산돼요';
+    el.innerHTML = `<span class="muted small">보유 중으로 저장 · ${riskTxt}</span>
+      <span class="serif" style="font-weight:800;color:var(--accent);">OPEN</span>`;
+    if(btn){ btn.disabled=false; btn.textContent = state.editingId?'수정 저장':'진입 기록하기'; }
+  } else {
+    el.innerHTML = `<span class="muted small">진입가를 입력하면 계산해드려요.</span>`;
+    if(btn) btn.disabled=true;
+  }
+}
+
+/* ---------- auth actions ---------- */
+function toggleAuthMode(){
+  state.authMode = state.authMode==='signin'?'signup':'signin';
+  state.authError=''; state.authNotice=''; render();
+}
+async function submitAuth(){
+  const email = (document.getElementById('auth-email')||{}).value?.trim();
+  const pw = (document.getElementById('auth-pw')||{}).value;
+  state.authError=''; state.authNotice='';
+  if(!email || !pw){ state.authError='이메일과 비밀번호를 입력해주세요.'; render(); return; }
+  if(pw.length<6){ state.authError='비밀번호는 6자 이상이어야 해요.'; render(); return; }
+  state.authLoading=true; render();
+  try{
+    if(state.authMode==='signup'){
+      const { data, error } = await sb.auth.signUp({ email, password: pw });
+      if(error) throw error;
+      if(data.session){ state.session=data.session; await afterLogin(); return; }
+      state.authNotice='확인 메일을 보냈어요. 메일의 링크를 누른 뒤 로그인해주세요.';
+      state.authMode='signin';
+    } else {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password: pw });
+      if(error) throw error;
+      state.session=data.session; await afterLogin(); return;
+    }
+  }catch(err){
+    state.authError = translateAuthError(err.message||String(err));
+  }
+  state.authLoading=false; render();
+}
+function translateAuthError(m){
+  if(/Invalid login credentials/i.test(m)) return '이메일 또는 비밀번호가 올바르지 않아요.';
+  if(/already registered/i.test(m)) return '이미 가입된 이메일이에요. 로그인해주세요.';
+  if(/Email not confirmed/i.test(m)) return '이메일 인증이 아직 안 됐어요. 받은 메일의 링크를 눌러주세요.';
+  return m;
+}
+async function afterLogin(){
+  state.authLoading=false;
+  state.trades = loadCache();   // 캐시 즉시 표시
+  loadBias();                   // 캐시된 바이어스 즉시 표시
+  render();
+  await remoteLoad();           // 서버에서 거래 동기화
+  await remoteBiasLoad();       // 서버에서 바이어스 동기화
+}
+async function signOut(){
+  if(sb) await sb.auth.signOut();
+  state.session=null; state.trades=[]; state.bias={}; state.tab='log';
+  render();
+}
+
+/* ---------- data actions ---------- */
+function setTab(t){ state.tab=t; state.confirmDeleteId=null; render(); }
+function setLogGroup(g){ state.logGroup=g; render(); }
+function setStatPeriod(p){ state.statPeriod=p; render(); }
+function setBiasTicker(t){ state.biasTicker=t; render(); }
+
+/* ---------- 청산 기록 ---------- */
+function openExit(id){
+  const t = state.trades.find(x=>x.id===id); if(!t) return;
+  const qty = Math.max(1, parseInt(t.qty,10)||1);
+  const closed = exitsOf(t).reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
+  const openQty = qty - closed;
+  state.exitFor = id;
+  state.exitForm = { price:'', qty:String(openQty), time:nowHM() };  // 기본 전량
+  render();
+}
+function closeExit(){ state.exitFor=null; state.exitForm={price:'',qty:'',time:''}; render(); }
+function nowHM(){ const d=new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function submitExit(){
+  const t = state.trades.find(x=>x.id===state.exitFor); if(!t) return;
+  const f = state.exitForm;
+  const price = parseFloat(f.price);
+  const q = Math.max(0, parseInt(f.qty,10)||0);
+  if(isNaN(price) || q<=0){ showToast('청산가와 수량을 확인해주세요'); return; }
+  const qty = Math.max(1, parseInt(t.qty,10)||1);
+  const closed = exitsOf(t).reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
+  if(q > qty-closed){ showToast('보유 수량보다 많아요'); return; }
+
+  const exits = exitsOf(t).slice();
+  exits.push({ price:String(price), qty:String(q), time:f.time||'' });
+  const updated = { ...t, exits };
+  // 전량 청산되면 대표 청산가(평균)를 exit 필드에도 반영 (구버전 호환·표시용)
+  const totalClosed = exits.reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
+  if(totalClosed >= qty){
+    const wsum = exits.reduce((s,e)=>s+parseFloat(e.price)*(parseInt(e.qty,10)||0),0);
+    updated.exit = String(Number((wsum/totalClosed).toFixed(4)));
+  }
+  state.trades = state.trades.map(x=>x.id===t.id?updated:x);
+  saveCache();
+  state.exitFor=null; state.exitForm={price:'',qty:'',time:''};
+  render();
+  remoteUpsert(updated);
+  showToast(totalClosed>=qty ? '전량 청산 완료' : `부분 청산 기록 (잔여 ${qty-totalClosed}계약)`);
+}
+function removeExit(id, idx){
+  const t = state.trades.find(x=>x.id===id); if(!t) return;
+  const exits = exitsOf(t).slice();
+  exits.splice(idx,1);
+  const updated = { ...t, exits };
+  if(exits.length===0) updated.exit='';
+  state.trades = state.trades.map(x=>x.id===id?updated:x);
+  saveCache(); render(); remoteUpsert(updated);
+}
+function setBiasFactor(key, value){
+  const tk = state.biasTicker;
+  if(!state.bias[tk]) state.bias[tk] = { h1:'',m15:'',pd:'',smt:'',session:'',vix:'',date:'' };
+  state.bias[tk][key] = value;
+  state.bias[tk].date = todayISO();
+  saveBias(); render();
+  remoteBiasUpsert(tk);          // 백그라운드 클라우드 동기화
+}
+function resetBias(){
+  const tk = state.biasTicker;
+  delete state.bias[tk];
+  saveBias(); render();
+  remoteBiasDelete(tk);
+}
+function openDay(date){ state.dayDetail=date; state.confirmDeleteId=null; render(); }
+function closeDay(){ state.dayDetail=null; render(); }
+
+function showToast(msg){
+  let el=document.getElementById('toast');
+  if(!el){ el=document.createElement('div'); el.id='toast'; el.className='toast'; document.body.appendChild(el); }
+  el.textContent=msg; el.classList.add('show');
+  clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'), 1800);
+}
+function copyText(text){
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(()=>showToast('분석용 기록을 복사했어요')).catch(()=>fallbackCopy(text));
+  } else { fallbackCopy(text); }
+}
+function fallbackCopy(text){
+  const ta=document.createElement('textarea'); ta.value=text;
+  ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta);
+  ta.select();
+  try{ document.execCommand('copy'); showToast('분석용 기록을 복사했어요'); }
+  catch(e){ showToast('복사 실패 — CSV로 저장할게요'); downloadCSV(); }
+  document.body.removeChild(ta);
+}
+// 전체 거래를 계산값 포함 마크다운으로 만들어 클립보드에 복사 (클로드에 붙여넣어 피드백용)
+function buildAnalysisText(){
+  const s=computeStats();
+  const rows=state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c)
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const head=`# 매매일지 (내보낸 시각: ${new Date().toLocaleString('ko-KR')})\n`+
+    `요약: 총 ${s.total}건 · 누적 순손익 ${fmt(s.totalNet)} · 누적 R ${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R · 승률 ${s.winRate.toFixed(0)}% · PF ${s.pf===Infinity?'∞':s.pf.toFixed(2)}\n\n`;
+  const cols=`| 날짜 | 시간 | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | 셋업 | 바이어스 |\n`+
+    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
+  const body=rows.map(t=>{
+    const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
+    const dir=t.direction==='long'?'롱':'숏';
+    const bv=(t.bias===''||t.bias==null)?null:parseInt(t.bias,10);
+    const bTxt=(bv==null||isNaN(bv))?'-':`${bv>0?'+':''}${bv}(${zoneOf(bv).label})`;
+    const rrTxt = t.c.rr!=null ? `1:${t.c.rr.toFixed(2)}` : '-';
+    const rTxt  = t.c.rMultiple!=null ? `${t.c.rMultiple>=0?'+':''}${t.c.rMultiple.toFixed(2)}` : '-';
+    return `| ${t.date} | ${t.entryTime||'-'} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.win?'승':'패'} | ${t.setup||'-'} | ${bTxt} |`;
+  }).join('\n');
+  return head+cols+body+'\n';
+}
+function exportForAnalysis(){
+  if(state.trades.length===0){ showToast('내보낼 거래가 없어요'); return; }
+  copyText(buildAnalysisText());
+}
+function downloadCSV(){
+  const rows=state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort((a,b)=>a.date.localeCompare(b.date));
+  const header=['날짜','시간','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','셋업','바이어스'];
+  const csv=[header.join(',')].concat(rows.map(t=>{
+    const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
+    const cell=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;
+    return [t.date,t.entryTime||'',label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit,t.stop||'',
+      t.c.net.toFixed(2),t.c.rr!=null?t.c.rr.toFixed(2):'',t.c.rMultiple!=null?t.c.rMultiple.toFixed(2):'',t.c.win?'승':'패',t.setup||'',
+      (t.bias===''||t.bias==null)?'':t.bias].map(cell).join(',');
+  })).join('\n');
+  const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob); const a=document.createElement('a');
+  a.href=url; a.download=`매매일지_${todayISO()}.csv`; a.click(); URL.revokeObjectURL(url);
+}
+function navMonth(delta){
+  let m=state.viewM+delta, y=state.viewY;
+  if(m<0){m=11;y--;} if(m>11){m=0;y++;}
+  state.viewM=m; state.viewY=y; render();
+}
+function openNewForm(){
+  state.form=emptyForm();
+  const bs=computeBias(state.form.ticker);          // 오늘 매겨둔 점수 자동 반영
+  if(bs.filled) state.form.bias=String(bs.total);
+  state.editingId=null; state.formOpen=true; render();
+}
+function openEditForm(id){
+  const t=state.trades.find(x=>x.id===id); if(!t) return;
+  state.form = { date:t.date, ticker:t.ticker, customTicker:t.customTicker||'', customMultiplier:t.customMultiplier||'',
+    direction:t.direction, qty:String(t.qty||'1'), entry:String(t.entry), exit:String(t.exit), stop: (t.stop===null||t.stop===undefined)?'':String(t.stop),
+    entryTime:t.entryTime||'', setup:t.setup||'', bias:(t.bias==null?'':String(t.bias)) };
+  state.editingId=id; state.formOpen=true; render();
+}
+function closeForm(){ state.formOpen=false; render(); }
+function selectTicker(tk){
+  state.form.ticker=tk;
+  document.getElementById('ticker-buttons').innerHTML = renderTickerButtons();
+  document.getElementById('custom-ticker-fields').innerHTML = tk==='CUSTOM' ? renderCustomFields() : '';
+  updatePreview();
+}
+function selectDirection(d){
+  state.form.direction=d;
+  document.getElementById('direction-buttons').innerHTML = renderDirectionButtons();
+  updatePreview();
+}
+function submitForm(){
+  const f = state.form;
+  const mult = f.ticker==='CUSTOM' ? (parseFloat(f.customMultiplier)||0) : MULT[f.ticker];
+  const entryVal = parseFloat(f.entry), stopVal = parseFloat(f.stop);
+  if(isNaN(entryVal) || !mult) return;
+  if(isNaN(stopVal) || Math.abs(entryVal-stopVal)===0){   // 손절가 필수
+    showToast('손절 세팅가를 입력해주세요');
+    return;
+  }
+  const record = { id: state.editingId || uid(), ...f };
+  // 청산가를 직접 적었으면 전량 청산 1건으로 기록
+  if(f.exit!=='' && !isNaN(parseFloat(f.exit))){
+    const already = Array.isArray(f.exits) ? f.exits : [];
+    if(already.length===0){
+      record.exits = [{ price:String(f.exit), qty:String(Math.max(1,parseInt(f.qty,10)||1)), time:'' }];
+    }
+  } else if(!Array.isArray(record.exits)){
+    record.exits = [];
+  }
+  if(state.editingId){
+    state.trades = state.trades.map(t=>t.id===state.editingId?record:t);
+  } else {
+    state.trades = [record, ...state.trades];
+  }
+  state.trades.sort((a,b)=>b.date.localeCompare(a.date));
+  saveCache();
+  state.formOpen=false;
+  render();
+  remoteUpsert(record);   // 백그라운드 동기화
+}
+function deleteTrade(id){
+  if(state.confirmDeleteId!==id){ state.confirmDeleteId=id; render(); return; }
+  state.trades = state.trades.filter(t=>t.id!==id);
+  state.confirmDeleteId=null;
+  saveCache(); render();
+  remoteDelete(id);
+}
+function clearAll(){
+  if(state.confirmDeleteId!=='ALL'){ state.confirmDeleteId='ALL'; render(); return; }
+  state.trades=[]; state.confirmDeleteId=null; saveCache(); render();
+  remoteClear();
+}
+
+/* ---------- boot ---------- */
+async function boot(){
+  if(CLOUD){
+    const { data } = await sb.auth.getSession();
+    if(data.session){ state.session=data.session; await afterLogin(); }
+    else render();
+    sb.auth.onAuthStateChange((_e, session)=>{
+      const wasIn = !!state.session; state.session=session||null;
+      if(state.session && !wasIn){ afterLogin(); }
+      if(!state.session){ state.trades=[]; state.bias={}; render(); }
+    });
+  } else {
+    // 로컬 전용 모드
+    state.trades = loadCache();
+    loadBias();
+    render();
+  }
+}
+boot();
+</script>
+</body>
+</html>
