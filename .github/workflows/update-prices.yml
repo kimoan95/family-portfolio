@@ -1,9 +1,20 @@
 name: 시세 자동 갱신
 
+# 10분마다 실행하되, 실제로 시세를 긁을지는 스크립트가 장 시간을 보고 판단합니다.
+#  - 국내주식/ETF: 평일 09:00~15:35 KST 에만 수집
+#  - 미국주식: 평일 프리장~애프터장(미 동부시간 04:00~20:00, 서머타임 자동 반영)에만 수집
+#  - 두 시장 모두 닫혀 있으면 아무것도 안 하고 즉시 종료 (Actions 시간 절약)
+# 간격을 바꾸려면 아래 cron 숫자만 수정:
+#   "*/5 * * * *"=5분  "*/10 * * * *"=10분  "*/15 * * * *"=15분  "*/30 * * * *"=30분
+# 참고1: GitHub Actions cron 최소 간격은 5분이며, 부하 시 몇 분 밀릴 수 있습니다.
+# 참고2: 무료 스크래핑 소스는 데이터 자체가 15~20분 지연이라 10분보다 촘촘히 해도
+#        같은 값이 반복될 뿐이고, 너무 자주 긁으면 차단될 수 있습니다.
+#        더 최신값을 원하면 KIS API 키(Secrets)를 넣고 5분으로 낮추는 걸 권장합니다.
+# 참고3: 비공개 저장소는 Actions 무료 월 2,000분 한도가 있습니다(공개 저장소는 무제한).
 on:
   schedule:
-    - cron: "*/10 * * * *"
-  workflow_dispatch:
+    - cron: "*/10 * * * *"   # 매 10분 (장 시간에만 실제 수집)
+  workflow_dispatch:          # 수동 실행 버튼도 제공
 
 jobs:
   fetch:
@@ -16,6 +27,7 @@ jobs:
       - run: pip install requests beautifulsoup4
       - name: 시세 수집 및 저장
         env:
+          FORCE_FETCH: "1"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SUPABASE_OWNER_UID: ${{ secrets.SUPABASE_OWNER_UID }}
