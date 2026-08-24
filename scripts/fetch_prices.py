@@ -1,39 +1,55 @@
 """
-지연시세 스크래퍼 → Supabase prices 테이블 upsert
-------------------------------------------------------
-- 국내주식/ETF: alphasquare.co.kr (분 단위 기준시각 제공), 실패 시 stockanalysis.com
-- 미국주식: Google Finance (프리마켓/애프터마켓 있으면 우선 반영)
-- 결과를 Supabase prices 테이블에 저장 (service_role 키 사용)
+시세 수집 → Supabase pf_prices / pf_price_history / pf_settings
 
-실행 환경:
-  * GitHub Actions에서 10분마다 실행 (장중에만 실제 수집)
-  * 또는 본인 컴퓨터에서 수동 실행
+핵심 원칙
+---------
+1. **보유 중인 종목만 수집한다.**
+   pf_baselines(시작 보유) + pf_trades(매수/매도)로 현재 수량을 계산해서
+   수량이 0보다 큰 종목만 대상으로 한다. 판 종목은 자동으로 빠진다.
 
-필요 환경변수:
-  SUPABASE_URL            - 프로젝트 URL
-  SUPABASE_SERVICE_KEY    - service_role 키 (절대 공개 금지, GitHub Secrets에 저장)
-  KIWOOM_APP_KEY (선택)   - 키움 REST API 조회용. 있으면 국내 시세를 키움으로 대체
-  KIWOOM_APP_SECRET (선택)
-  KIWOOM_ENV (선택)       - 'mock'(모의) 또는 'real'(실전), 기본 mock
+2. **소스를 여러 개 순차 시도하고, 실패하면 이유를 남긴다.**
+   무료 소스는 수시로 막히거나 구조가 바뀐다. 어떤 소스가 살아있는지
+   로그로 알 수 있어야 다음에 고칠 수 있다.
 
-의존성: pip install requests beautifulsoup4
+필요 환경변수
+  SUPABASE_URL            프로젝트 URL
+  SUPABASE_SERVICE_KEY    service_role(또는 sb_secret_) 키
+  SUPABASE_OWNER_UID      본인 UUID
+  FORCE_FETCH=1           (선택) 장 시간 무시하고 강제 수집
+  KIWOOM_APP_KEY/SECRET   (선택) 국내 실시간 시세
+
+의존성: pip install requests
 """
 import os, re, json, sys
 import requests
 from datetime import datetime, timezone
+
 try:
-    from zoneinfo import ZoneInfo   # Python 3.9+
+    from zoneinfo import ZoneInfo
 except ImportError:
     ZoneInfo = None
 
 SUPABASE_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SERVICE_KEY  = os.environ["SUPABASE_SERVICE_KEY"]
+OWNER_UID    = os.environ.get("SUPABASE_OWNER_UID")
 
-# 추적 종목은 DB(tickers 테이블)에서 동적으로 읽어옵니다.
-# 앱에서 새 종목을 매수하면 tickers에 자동 등록되므로 이 파일은 수정할 필요가 없습니다.
-OWNER_UID = os.environ.get("SUPABASE_OWNER_UID")   # RLS 우회(service_role) 시 필요
+UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+      "Accept": "application/json,text/html,*/*",
+      "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8"}
+
+# 소스별 성공/실패 집계 (마지막에 요약 출력)
+TALLY = {}
 
 
+def tally(src, ok):
+    d = TALLY.setdefault(src, {"성공": 0, "실패": 0})
+    d["성공" if ok else "실패"] += 1
+
+
+# ══════════════════════════════════════════════════════════
+#  Supabase
+# ══════════════════════════════════════════════════════════
 def sb_get(path, params=None):
     url = f"{SUPABASE_URL}/rest/v1/{path}"
     h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}"}
@@ -42,285 +58,453 @@ def sb_get(path, params=None):
     return r.json()
 
 
-def load_tickers():
-    """tickers 테이블 → (국내 dict, 해외 dict). market 컬럼으로 구분."""
-    params = {"select": "ticker,name,market"}
+def sb_upsert(path, rows, on_conflict):
+    if not rows:
+        return
+    url = f"{SUPABASE_URL}/rest/v1/{path}?on_conflict={on_conflict}"
+    h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}",
+         "content-type": "application/json", "prefer": "resolution=merge-duplicates"}
+    r = requests.post(url, headers=h, data=json.dumps(rows), timeout=30)
+    r.raise_for_status()
+
+
+def owner_param(p=None):
+    p = dict(p or {})
     if OWNER_UID:
-        params["owner"] = f"eq.{OWNER_UID}"
-    rows = sb_get("pf_tickers", params)
+        p["owner"] = f"eq.{OWNER_UID}"
+    return p
+
+
+# ══════════════════════════════════════════════════════════
+#  보유 종목 산출 — 이게 이 파일의 핵심
+# ══════════════════════════════════════════════════════════
+def load_holdings():
+    """현재 보유 중인 종목만 반환. {ticker: (name, market)}
+
+    baseline(로그 시작 시점 보유) + 매수 − 매도 = 현재 수량.
+    수량이 0 이하인 종목(= 전량 매도한 종목)은 제외한다.
+    """
+    qty = {}
+
+    for r in sb_get("pf_baselines", owner_param({"select": "ticker,qty"})):
+        t = r.get("ticker")
+        if t:
+            qty[t] = qty.get(t, 0) + float(r.get("qty") or 0)
+
+    for r in sb_get("pf_trades", owner_param({"select": "ticker,side,qty"})):
+        t, side, q = r["ticker"], r["side"], float(r.get("qty") or 0)
+        qty[t] = qty.get(t, 0) + (q if side == "매수" else -q)
+
+    held = {t for t, q in qty.items() if q > 1e-9}
+
+    meta = {}
+    for r in sb_get("pf_tickers", owner_param({"select": "ticker,name,market"})):
+        meta[r["ticker"]] = (r.get("name") or r["ticker"], r.get("market") or "")
+
     kr, us = {}, {}
-    for row in rows:
-        t, nm, mk = row["ticker"], row.get("name") or row["ticker"], (row.get("market") or "")
-        (us if mk == "US" else kr)[t] = nm
+    for t in sorted(held):
+        name, market = meta.get(t, (t, ""))
+        (us if market == "US" else kr)[t] = (name, market)
+
+    sold = sorted(set(qty) - held)
+    if sold:
+        print(f"제외(전량매도): {', '.join(sold)}")
     return kr, us
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (price-fetch bot)"}
+
+# ══════════════════════════════════════════════════════════
+#  장 시간
+# ══════════════════════════════════════════════════════════
+def _force():
+    return os.environ.get("FORCE_FETCH") == "1"
 
 
 def kr_market_open():
-    """국내장: 평일 09:00~15:35 KST. FORCE_FETCH=1 이면 무조건 True."""
-    if os.environ.get("FORCE_FETCH") == "1":
+    if _force() or ZoneInfo is None:
         return True
-    if ZoneInfo is None:
-        return True  # 시간대 판별 불가하면 그냥 수집
     now = datetime.now(ZoneInfo("Asia/Seoul"))
-    if now.weekday() >= 5:            # 토(5)/일(6)
+    if now.weekday() >= 5:
         return False
-    mins = now.hour * 60 + now.minute
-    return 9 * 60 <= mins <= 15 * 60 + 35
+    t = now.hour * 60 + now.minute
+    return 9 * 60 <= t <= 15 * 60 + 35
 
 
 def us_market_open():
-    """미국장: 평일 프리장~애프터장 (미 동부시간 04:00~20:00, 서머타임 자동).
-    금요일 애프터장까지 포함(한국시간 토요일 새벽). FORCE_FETCH=1 이면 무조건 True."""
-    if os.environ.get("FORCE_FETCH") == "1":
-        return True
-    if ZoneInfo is None:
+    if _force() or ZoneInfo is None:
         return True
     now = datetime.now(ZoneInfo("America/New_York"))
-    if now.weekday() >= 5:            # 미 동부 기준 토/일
+    if now.weekday() >= 5:
         return False
-    mins = now.hour * 60 + now.minute
-    return 4 * 60 <= mins <= 20 * 60
+    return 4 <= now.hour < 20
 
 
 def num(s):
-    if s is None: return None
-    s = re.sub(r"[^\d.\-]", "", str(s))
-    try: return float(s)
-    except: return None
-
-
-def fetch_kr_alphasquare(code):
-    """alphasquare 종목요약 페이지에서 현재가/변동률/기준시각 파싱."""
-    url = f"https://alphasquare.co.kr/home/stock-summary?code={code}"
-    r = requests.get(url, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    html = r.text
-    # meta description에 "현재 주가는 15,210원입니다" 형태
-    m = re.search(r"현재 주가는\s*([\d,]+)\s*원", html)
-    price = num(m.group(1)) if m else None
-    chg = re.search(r"변동률[^\-\d]*(-?[\d.]+)%", html)
-    change = num(chg.group(1)) if chg else None
-    ts = re.search(r"기준 시각[^\d]*([\d.]{8,10}\s*[\d:]{5,8})", html)
-    as_of = ts.group(1).strip() if ts else None
-    return {"price": price, "change_pct": change, "as_of": as_of, "source": "alphasquare"} if price else None
-
-
-def fetch_kr_stockanalysis(code):
-    url = f"https://stockanalysis.com/quote/krx/{code}/"
-    r = requests.get(url, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    m = re.search(r'"price"\s*:\s*([\d.]+)', r.text) or re.search(r'>([\d,]+)</div>\s*<div[^>]*>[+\-]', r.text)
-    price = num(m.group(1)) if m else None
-    return {"price": price, "change_pct": None, "as_of": "stockanalysis", "source": "stockanalysis"} if price else None
-
-
-def fetch_us_google(ticker):
-    """Google Finance. 프리마켓/애프터마켓 값이 있으면 우선 사용."""
-    url = f"https://www.google.com/finance/quote/{ticker}:NASDAQ"
-    r = requests.get(url, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    html = r.text
-    prices = re.findall(r'data-last-price="([\d.]+)"', html)
-    # 프리마켓/애프터 텍스트가 페이지에 있으면 두 번째 가격(있을 경우)이 연장거래가인 경우가 많음
-    regular = num(prices[0]) if prices else None
-    ext = None
-    if ("Pre-market" in html or "After hours" in html) and len(prices) >= 2:
-        ext = num(prices[1])
-    price = ext if ext else regular
-    label = "pre/after" if ext else "regular"
-    return {"price": price, "change_pct": None, "as_of": f"google({label})", "source": "google"} if price else None
-
-
-def fetch_usd_krw():
-    """Google Finance에서 USD/KRW 환율."""
-    url = "https://www.google.com/finance/quote/USD-KRW"
-    r = requests.get(url, headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    m = re.search(r'data-last-price="([\d.]+)"', r.text)
-    return num(m.group(1)) if m else None
-
-
-def fetch_kr_kiwoom(codes):
-    """(선택) 키움 REST API로 국내 현재가 조회. 키가 있을 때만.
-    - 토큰: POST {host}/oauth2/token  (grant_type=client_credentials, appkey, secretkey)
-    - 시세: POST {host}/api/dostk/stkinfo  헤더 api-id=ka10001, 바디 {"stk_cd": 코드}
-      (ka10001 = 주식기본정보요청)
-    응답 필드명이 환경에 따라 다를 수 있어, 후보 키를 순서대로 탐색하고
-    실패 시 응답 키 목록을 출력해 맞춰나갈 수 있게 했습니다."""
-    app_key = os.environ.get("KIWOOM_APP_KEY"); app_secret = os.environ.get("KIWOOM_APP_SECRET")
-    if not app_key or not app_secret: return {}
-    env = os.environ.get("KIWOOM_ENV", "mock")
-    base = "https://mockapi.kiwoom.com" if env == "mock" else "https://api.kiwoom.com"
-    # --- 토큰 발급 ---
+    if s is None:
+        return None
     try:
-        tr = requests.post(f"{base}/oauth2/token",
-                           json={"grant_type": "client_credentials", "appkey": app_key, "secretkey": app_secret},
-                           headers={"content-type": "application/json;charset=UTF-8"}, timeout=15).json()
-        tok = tr.get("token") or tr.get("access_token")
-        if not tok:
-            print(f"키움 토큰 발급 실패: {tr}", file=sys.stderr); return {}
-    except Exception as e:
-        print(f"키움 토큰 요청 실패: {e}", file=sys.stderr); return {}
+        return float(str(s).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
 
-    price_keys = ["cur_prc", "stck_prpr", "prpr", "cur_pric", "base_pric"]
-    chg_keys = ["flu_rt", "fluc_rt", "prdy_ctrt", "chg_rt"]
+
+# ══════════════════════════════════════════════════════════
+#  국내 시세 소스
+# ══════════════════════════════════════════════════════════
+def kr_naver_mobile(code, market=""):
+    """네이버 증권 모바일 API. 국내 주식·ETF 모두 지원."""
+    r = requests.get(f"https://m.stock.naver.com/api/stock/{code}/basic",
+                     headers=UA, timeout=15)
+    r.raise_for_status()
+    j = r.json()
+    price = num(j.get("closePrice"))
+    if not price:
+        return None
+    return {"price": price,
+            "change_pct": num(str(j.get("fluctuationsRatio") or "").replace("%", "")),
+            "as_of": j.get("localTradedAt") or j.get("stockEndType") or "naver",
+            "source": "naver"}
+
+
+def kr_naver_polling(code, market=""):
+    """네이버 실시간 폴링 API (모바일 API 실패 시 대안)."""
+    r = requests.get(
+        f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}",
+        headers=UA, timeout=15)
+    r.raise_for_status()
+    datas = (r.json().get("datas") or [])
+    if not datas:
+        return None
+    d = datas[0]
+    price = num(d.get("closePrice"))
+    if not price:
+        return None
+    return {"price": price,
+            "change_pct": num(str(d.get("fluctuationsRatio") or "").replace("%", "")),
+            "as_of": d.get("localTradedAt") or "naver-polling",
+            "source": "naver-polling"}
+
+
+def kr_yahoo(code, market=""):
+    """야후 파이낸스. 코스피 .KS / 코스닥 .KQ."""
+    sufs = [".KS", ".KQ"]
+    if market == "KOSDAQ":
+        sufs = [".KQ", ".KS"]
+    for suf in sufs:
+        try:
+            v = yahoo_chart(code + suf)
+            if v:
+                v["source"] = "yahoo"
+                return v
+        except Exception:
+            continue
+    return None
+
+
+def kr_daum(code, market=""):
+    """다음 금융 API."""
+    h = dict(UA)
+    h["referer"] = f"https://finance.daum.net/quotes/A{code}"
+    r = requests.get(f"https://finance.daum.net/api/quotes/A{code}",
+                     headers=h, timeout=15)
+    r.raise_for_status()
+    j = r.json()
+    price = num(j.get("tradePrice"))
+    if not price:
+        return None
+    cr = j.get("changeRate")
+    pct = round(float(cr) * 100, 2) if cr is not None else None
+    if j.get("change") == "FALL" and pct:
+        pct = -pct
+    return {"price": price, "change_pct": pct,
+            "as_of": j.get("date") or "daum", "source": "daum"}
+
+
+KR_SOURCES = [kr_naver_mobile, kr_naver_polling, kr_daum, kr_yahoo]
+
+
+# ══════════════════════════════════════════════════════════
+#  해외 시세 소스
+# ══════════════════════════════════════════════════════════
+def yahoo_chart(symbol):
+    """야후 chart API 공통. 프리/애프터장 값이 있으면 우선."""
+    for host in ("query1", "query2"):
+        try:
+            r = requests.get(
+                f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}",
+                params={"interval": "1d", "range": "1d"}, headers=UA, timeout=15)
+            r.raise_for_status()
+            meta = r.json()["chart"]["result"][0]["meta"]
+            price = num(meta.get("postMarketPrice")) or num(meta.get("preMarketPrice")) \
+                    or num(meta.get("regularMarketPrice"))
+            prev = num(meta.get("chartPreviousClose")) or num(meta.get("previousClose"))
+            if not price:
+                return None
+            pct = round((price - prev) / prev * 100, 2) if prev else None
+            return {"price": price, "change_pct": pct,
+                    "as_of": "yahoo", "source": "yahoo"}
+        except Exception:
+            continue
+    return None
+
+
+def us_yahoo(ticker):
+    return yahoo_chart(ticker)
+
+
+def us_stooq(ticker):
+    """stooq CSV. 형식: Symbol,Date,Time,Open,High,Low,Close,Volume"""
+    r = requests.get("https://stooq.com/q/l/",
+                     params={"s": f"{ticker.lower()}.us", "f": "sd2t2ohlcv",
+                             "h": "", "e": "csv"},
+                     headers=UA, timeout=15)
+    r.raise_for_status()
+    lines = [l for l in r.text.strip().split("\n") if l]
+    if len(lines) < 2:
+        return None
+    c = lines[1].split(",")
+    price = num(c[6]) if len(c) > 6 else None
+    if not price:
+        return None
+    return {"price": price, "change_pct": None,
+            "as_of": f"stooq {c[1]} {c[2]}", "source": "stooq"}
+
+
+def us_google(ticker):
+    for ex in ("NASDAQ", "NYSE"):
+        try:
+            r = requests.get(f"https://www.google.com/finance/quote/{ticker}:{ex}",
+                             headers=UA, timeout=15)
+            r.raise_for_status()
+            prices = re.findall(r'data-last-price="([\d.]+)"', r.text)
+            if not prices:
+                continue
+            ext = None
+            if ("Pre-market" in r.text or "After hours" in r.text) and len(prices) >= 2:
+                ext = num(prices[1])
+            return {"price": ext or num(prices[0]), "change_pct": None,
+                    "as_of": "google", "source": "google"}
+        except Exception:
+            continue
+    return None
+
+
+US_SOURCES = [us_yahoo, us_stooq, us_google]
+
+
+# ══════════════════════════════════════════════════════════
+#  환율
+# ══════════════════════════════════════════════════════════
+def fx_yahoo():
+    v = yahoo_chart("KRW=X")
+    return v["price"] if v else None
+
+
+def fx_erapi():
+    r = requests.get("https://open.er-api.com/v6/latest/USD", headers=UA, timeout=15)
+    r.raise_for_status()
+    return num(r.json().get("rates", {}).get("KRW"))
+
+
+def fx_naver():
+    r = requests.get(
+        "https://m.stock.naver.com/front-api/marketIndex/prices",
+        params={"category": "exchange", "reutersCode": "FX_USDKRW", "page": 1},
+        headers=UA, timeout=15)
+    r.raise_for_status()
+    j = r.json()
+    rows = j.get("result") or j.get("datas") or []
+    if isinstance(rows, dict):
+        rows = rows.get("prices") or []
+    return num(rows[0].get("closePrice")) if rows else None
+
+
+FX_SOURCES = [fx_yahoo, fx_erapi, fx_naver]
+
+
+# ══════════════════════════════════════════════════════════
+#  키움 (선택)
+# ══════════════════════════════════════════════════════════
+def fetch_kr_kiwoom(codes):
+    key, sec = os.environ.get("KIWOOM_APP_KEY"), os.environ.get("KIWOOM_APP_SECRET")
+    if not key or not sec:
+        return {}
+    base = ("https://api.kiwoom.com" if os.environ.get("KIWOOM_ENV") == "real"
+            else "https://mockapi.kiwoom.com")
+    try:
+        t = requests.post(f"{base}/oauth2/token",
+                          json={"grant_type": "client_credentials",
+                                "appkey": key, "secretkey": sec},
+                          timeout=15)
+        t.raise_for_status()
+        token = t.json().get("token") or t.json().get("access_token")
+        if not token:
+            return {}
+    except Exception as e:
+        print(f"키움 토큰 실패: {e}", file=sys.stderr)
+        return {}
+
     out = {}
     for code in codes:
         try:
-            h = {"authorization": f"Bearer {tok}", "api-id": "ka10001",
-                 "content-type": "application/json;charset=UTF-8", "cont-yn": "N", "next-key": ""}
-            r = requests.post(f"{base}/api/dostk/stkinfo", headers=h, json={"stk_cd": code}, timeout=15).json()
-            price = next((num(r[k]) for k in price_keys if r.get(k) not in (None, "")), None)
-            chg = next((num(r[k]) for k in chg_keys if r.get(k) not in (None, "")), None)
-            if price:
-                out[code] = {"price": abs(price), "change_pct": chg, "as_of": "kiwoom", "source": "kiwoom"}
-            else:
-                print(f"키움 {code}: 현재가 필드 못 찾음. 응답 키들 → {list(r.keys())}", file=sys.stderr)
-        except Exception as e:
-            print(f"키움 {code} 실패: {e}", file=sys.stderr)
+            r = requests.post(f"{base}/api/dostk/stkinfo",
+                              headers={"authorization": f"Bearer {token}",
+                                       "api-id": "ka10001",
+                                       "content-type": "application/json"},
+                              json={"stk_cd": code}, timeout=15)
+            r.raise_for_status()
+            px = num(str(r.json().get("cur_prc", "")).lstrip("+-"))
+            if px:
+                out[code] = {"price": px, "change_pct": None,
+                             "as_of": "kiwoom", "source": "kiwoom"}
+        except Exception:
+            pass
     return out
 
 
-def upsert(rows):
-    if OWNER_UID:
-        for row in rows:
-            row["owner"] = OWNER_UID
-    url = f"{SUPABASE_URL}/rest/v1/pf_prices?on_conflict=owner,ticker"
-    h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}",
-         "content-type": "application/json", "prefer": "resolution=merge-duplicates"}
-    r = requests.post(url, headers=h, data=json.dumps(rows), timeout=20)
-    r.raise_for_status()
-    print(f"시세 upsert 완료: {len(rows)}건")
+# ══════════════════════════════════════════════════════════
+#  저장
+# ══════════════════════════════════════════════════════════
+def today_kst():
+    try:
+        return datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat() if ZoneInfo \
+               else datetime.now(timezone.utc).date().isoformat()
+    except Exception:
+        return datetime.now(timezone.utc).date().isoformat()
 
 
-def upsert_history(rows):
-    """pf_price_history 에 당일 봉을 기록/갱신.
-    같은 날 여러 번 실행되면 high/low 를 확장합니다 (MAE/MFE 계산용)."""
+def save_prices(rows):
+    for r in rows:
+        if OWNER_UID:
+            r["owner"] = OWNER_UID
+    sb_upsert("pf_prices", rows, "owner,ticker")
+    print(f"→ pf_prices 저장 {len(rows)}건")
+
+
+def save_history(rows):
     if not rows:
         return
+    d = today_kst()
     try:
-        today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat() if ZoneInfo \
-                else datetime.now(timezone.utc).date().isoformat()
-    except Exception:
-        today = datetime.now(timezone.utc).date().isoformat()
-
-    params = {"select": "ticker,high,low,open", "d": f"eq.{today}"}
-    if OWNER_UID:
-        params["owner"] = f"eq.{OWNER_UID}"
-    try:
-        existing = {r["ticker"]: r for r in sb_get("pf_price_history", params)}
+        prev = {r["ticker"]: r for r in
+                sb_get("pf_price_history",
+                       owner_param({"select": "ticker,high,low,open", "d": f"eq.{d}"}))}
     except Exception as e:
         print(f"이력 조회 실패(신규로 처리): {e}", file=sys.stderr)
-        existing = {}
+        prev = {}
 
     out = []
     for r in rows:
-        t, px, ccy = r["ticker"], r["price"], r.get("currency", "KRW")
-        prev = existing.get(t)
-        if prev:
-            hi = max(float(prev.get("high") or px), px)
-            lo = min(float(prev.get("low") or px), px)
-            op = prev.get("open") or px
-        else:
-            hi = lo = op = px
-        row = {"ticker": t, "d": today, "open": op, "high": hi, "low": lo,
-               "close": px, "currency": ccy}
+        t, px = r["ticker"], r["price"]
+        p = prev.get(t)
+        hi = max(float(p.get("high") or px), px) if p else px
+        lo = min(float(p.get("low") or px), px) if p else px
+        op = (p.get("open") if p else None) or px
+        row = {"ticker": t, "d": d, "open": op, "high": hi, "low": lo,
+               "close": px, "currency": r.get("currency", "KRW")}
         if OWNER_UID:
             row["owner"] = OWNER_UID
         out.append(row)
-
-    url = f"{SUPABASE_URL}/rest/v1/pf_price_history?on_conflict=owner,ticker,d"
-    h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}",
-         "content-type": "application/json", "prefer": "resolution=merge-duplicates"}
-    resp = requests.post(url, headers=h, data=json.dumps(out), timeout=20)
-    resp.raise_for_status()
-    print(f"시세 이력 기록: {len(out)}건 ({today})")
+    sb_upsert("pf_price_history", out, "owner,ticker,d")
+    print(f"→ pf_price_history 저장 {len(out)}건 ({d})")
 
 
-def upsert_setting(key, value):
+def save_setting(key, value):
     row = {"key": key, "value": value}
     if OWNER_UID:
         row["owner"] = OWNER_UID
-    url = f"{SUPABASE_URL}/rest/v1/pf_settings?on_conflict=owner,key"
-    h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}",
-         "content-type": "application/json", "prefer": "resolution=merge-duplicates"}
-    r = requests.post(url, headers=h, data=json.dumps([row]), timeout=20)
-    r.raise_for_status()
-    print(f"설정 갱신: {key} = {value}")
+    sb_upsert("pf_settings", [row], "owner,key")
+    print(f"→ 설정 저장 {key} = {value}")
+
+
+# ══════════════════════════════════════════════════════════
+#  수집 루프
+# ══════════════════════════════════════════════════════════
+def collect(items, sources, currency, preset=None):
+    """items: {ticker: (name, market)} → 시세 row 리스트"""
+    rows, failed = [], []
+    for code, (name, market) in items.items():
+        got = (preset or {}).get(code)
+        if got:
+            tally("kiwoom", True)
+        else:
+            errs = []
+            for fn in sources:
+                try:
+                    v = fn(code, market) if currency == "KRW" else fn(code)
+                    if v and v.get("price"):
+                        got = v
+                        tally(v.get("source", fn.__name__), True)
+                        break
+                    errs.append(f"{fn.__name__}: 값없음")
+                    tally(fn.__name__, False)
+                except Exception as e:
+                    errs.append(f"{fn.__name__}: {type(e).__name__} {str(e)[:60]}")
+                    tally(fn.__name__, False)
+        if got:
+            rows.append({"ticker": code, "name": name, "price": got["price"],
+                         "change_pct": got.get("change_pct"), "currency": currency,
+                         "source": got.get("source"), "as_of": got.get("as_of")})
+            print(f"  ✓ {name}({code}) {got['price']:,} [{got.get('source')}]")
+        else:
+            failed.append((name, code, errs))
+    for name, code, errs in failed:
+        print(f"  ✗ {name}({code}) 실패")
+        for e in errs:
+            print(f"      {e}")
+    return rows
 
 
 def main():
-    rows = []
-    do_kr = kr_market_open()
-    do_us = us_market_open()
-    print(f"장 상태 → 국내: {'열림' if do_kr else '닫힘(건너뜀)'}, 미국: {'열림' if do_us else '닫힘(건너뜀)'}")
-
+    do_kr, do_us = kr_market_open(), us_market_open()
+    print(f"장 상태 → 국내 {'열림' if do_kr else '닫힘'}, 미국 {'열림' if do_us else '닫힘'}"
+          + ("  (FORCE_FETCH)" if _force() else ""))
     if not do_kr and not do_us:
-        print("두 시장 모두 장외 시간이라 수집을 건너뜁니다.")
+        print("두 시장 모두 장외 시간이라 건너뜁니다.")
         return
 
     try:
-        KR_TICKERS, US_TICKERS = load_tickers()
+        KR, US = load_holdings()
     except Exception as e:
-        print(f"[치명] pf_tickers 테이블 로드 실패: {e}", file=sys.stderr)
+        print(f"[치명] 보유 종목 로드 실패: {e}", file=sys.stderr)
         sys.exit(1)
-    print(f"추적 종목 → 국내 {len(KR_TICKERS)}개, 해외 {len(US_TICKERS)}개")
+    print(f"보유 종목 → 국내 {len(KR)}개, 해외 {len(US)}개\n")
 
-    if do_kr and KR_TICKERS:
-        kiwoom = fetch_kr_kiwoom(list(KR_TICKERS.keys()))
-        for code, name in KR_TICKERS.items():
-            data = kiwoom.get(code)
-            for fn in (fetch_kr_alphasquare, fetch_kr_stockanalysis):
-                if data and data.get("price"):
-                    break
-                try:
-                    data = fn(code)
-                except Exception as e:
-                    print(f"{fn.__name__} {code} 실패: {e}", file=sys.stderr)
-                    data = None
-            if data and data.get("price"):
-                rows.append({"ticker": code, "name": name, "price": data["price"],
-                             "change_pct": data.get("change_pct"), "currency": "KRW",
-                             "source": data["source"], "as_of": data.get("as_of"),
-                             "updated_at": datetime.now(timezone.utc).isoformat()})
-            else:
-                print(f"[경고] {name}({code}) 시세 수집 실패 — 이전 값 유지", file=sys.stderr)
+    rows = []
+    if do_kr and KR:
+        print("── 국내 ──")
+        rows += collect(KR, KR_SOURCES, "KRW", fetch_kr_kiwoom(list(KR)))
+    if do_us and US:
+        print("── 해외 ──")
+        rows += collect(US, US_SOURCES, "USD")
 
-    if do_us and US_TICKERS:
-        for ticker, name in US_TICKERS.items():
-            try:
-                data = fetch_us_google(ticker)
-            except Exception as e:
-                print(f"google {ticker} 실패: {e}", file=sys.stderr)
-                data = None
-            if data and data.get("price"):
-                rows.append({"ticker": ticker, "name": name, "price": data["price"],
-                             "change_pct": data.get("change_pct"), "currency": "USD",
-                             "source": data["source"], "as_of": data.get("as_of"),
-                             "updated_at": datetime.now(timezone.utc).isoformat()})
-            else:
-                print(f"[경고] {name}({ticker}) 시세 수집 실패 — 이전 값 유지", file=sys.stderr)
-
-    # 환율은 장 시간과 무관하게 갱신 (해외자산 원화 환산에 항상 필요)
-    try:
-        fx = fetch_usd_krw()
-        if fx and 500 < fx < 3000:
-            upsert_setting("fx_usd_krw", fx)
-        else:
-            print(f"[경고] 환율 값이 이상함: {fx} — 갱신 건너뜀", file=sys.stderr)
-    except Exception as e:
-        print(f"환율 수집 실패: {e}", file=sys.stderr)
-
-    if rows:
-        upsert(rows)
+    print("\n── 환율 ──")
+    fx = None
+    for fn in FX_SOURCES:
         try:
-            upsert_history(rows)
+            fx = fn()
+            if fx and 500 < fx < 3000:
+                print(f"  ✓ USD/KRW {fx:,} [{fn.__name__}]")
+                break
+            print(f"  ✗ {fn.__name__}: 값이 이상함 ({fx})")
+            fx = None
         except Exception as e:
-            print(f"이력 기록 실패(시세는 정상 저장됨): {e}", file=sys.stderr)
-    else:
-        print("수집된 시세가 없습니다.", file=sys.stderr)
+            print(f"  ✗ {fn.__name__}: {type(e).__name__} {str(e)[:60]}")
+
+    print("\n── 소스별 집계 ──")
+    for src, d in sorted(TALLY.items()):
+        print(f"  {src:20s} 성공 {d['성공']:2d} / 실패 {d['실패']:2d}")
+
+    if not rows and not fx:
+        print("\n[치명] 아무것도 수집하지 못했습니다.", file=sys.stderr)
+        sys.exit(1)
+
+    print()
+    if rows:
+        save_prices(rows)
+        save_history(rows)
+    if fx:
+        save_setting("fx_usd_krw", fx)
+    print("\n완료.")
 
 
 if __name__ == "__main__":
