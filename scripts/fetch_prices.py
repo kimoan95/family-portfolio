@@ -47,7 +47,7 @@ def load_tickers():
     params = {"select": "ticker,name,market"}
     if OWNER_UID:
         params["owner"] = f"eq.{OWNER_UID}"
-    rows = sb_get("tickers", params)
+    rows = sb_get("pf_tickers", params)
     kr, us = {}, {}
     for row in rows:
         t, nm, mk = row["ticker"], row.get("name") or row["ticker"], (row.get("market") or "")
@@ -187,7 +187,7 @@ def upsert(rows):
     if OWNER_UID:
         for row in rows:
             row["owner"] = OWNER_UID
-    url = f"{SUPABASE_URL}/rest/v1/prices?on_conflict=owner,ticker"
+    url = f"{SUPABASE_URL}/rest/v1/pf_prices?on_conflict=owner,ticker"
     h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}",
          "content-type": "application/json", "prefer": "resolution=merge-duplicates"}
     r = requests.post(url, headers=h, data=json.dumps(rows), timeout=20)
@@ -243,7 +243,7 @@ def upsert_setting(key, value):
     row = {"key": key, "value": value}
     if OWNER_UID:
         row["owner"] = OWNER_UID
-    url = f"{SUPABASE_URL}/rest/v1/settings?on_conflict=owner,key"
+    url = f"{SUPABASE_URL}/rest/v1/pf_settings?on_conflict=owner,key"
     h = {"apikey": SERVICE_KEY, "authorization": f"Bearer {SERVICE_KEY}",
          "content-type": "application/json", "prefer": "resolution=merge-duplicates"}
     r = requests.post(url, headers=h, data=json.dumps([row]), timeout=20)
@@ -264,7 +264,7 @@ def main():
     try:
         KR_TICKERS, US_TICKERS = load_tickers()
     except Exception as e:
-        print(f"[치명] tickers 테이블 로드 실패: {e}", file=sys.stderr)
+        print(f"[치명] pf_tickers 테이블 로드 실패: {e}", file=sys.stderr)
         sys.exit(1)
     print(f"추적 종목 → 국내 {len(KR_TICKERS)}개, 해외 {len(US_TICKERS)}개")
 
