@@ -71,7 +71,6 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 </style>
 </head>
 <body>
-
 <style id="appswitch-css">
 #appswitch{display:flex;gap:0;margin:0 0 16px;border-bottom:1px solid rgba(128,128,128,.28);
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif}
@@ -137,6 +136,8 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
         <div><label>구분</label><select id="f_side"><option>매수</option><option>매도</option></select></div>
         <div><label>종목명</label><input type="text" id="f_name" list="dlNames" required><datalist id="dlNames"></datalist></div>
         <div><label>티커/코드</label><input type="text" id="f_ticker" required></div>
+        <div><label>섹터</label><input type="text" id="f_sector" list="secList" placeholder="예: 반도체">
+          <span class="note" id="secHint" style="margin:3px 0 0;display:block;font-size:10px"></span></div>
         <div><label>수량</label><input type="number" id="f_qty" step="any" min="0" required></div>
         <div><label>단가</label><input type="number" id="f_px" step="any" min="0" required></div>
         <div><label>환율 (USD)</label><input type="number" id="f_fx" step="any"></div>
@@ -162,9 +163,11 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
   <div id="v-prices" style="display:none">
     <div class="card">
       <h2>시세</h2>
-      <p class="note" style="margin-bottom:12px">스크래퍼가 하루 여러 번 자동 갱신합니다. 여기서 직접 고칠 수도 있습니다.</p>
+      <p class="note" style="margin-bottom:12px">보유 중인 종목만 표시됩니다. 스크래퍼가 10분마다 자동 갱신하며, 여기서 직접 고칠 수도 있습니다.<br>
+      <b>새로 산 종목은 섹터가 «기타»로 들어옵니다</b> — 아래 칸에서 바꿔주면 개요 탭 도넛 차트에 제대로 반영됩니다. (테두리가 노란 것이 «기타»)</p>
       <div style="max-width:250px;margin-bottom:14px"><label>USD/KRW</label><input type="number" id="fxIn" step="any"></div>
-      <div id="pGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:8px"></div>
+      <datalist id="secList"></datalist>
+      <div id="pGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:8px"></div>
       <p class="note" id="pAsOf"></p>
     </div>
   </div>
@@ -750,12 +753,16 @@ function renderPrices(){
   Object.values(byAcct).forEach(s=>s.positions.forEach(p=>held.add(p.ticker)));
   $('pGrid').innerHTML=[...held].sort().map(t=>{
     const m=metaOf(t), r=D.prices.find(x=>x.ticker===t)||{};
-    return `<div style="display:flex;align-items:center;gap:7px;padding:7px;background:#fafaf8;border-radius:6px;border:.5px solid #f0efe9">
+    const isEtc=(m.sector||'기타')==='기타';
+    return `<div style="display:flex;align-items:center;gap:7px;padding:7px;background:#fafaf8;border-radius:6px;border:.5px solid ${isEtc?'#e8d9b0':'#f0efe9'}">
       <label style="flex:1;margin:0;font-size:11.5px;color:#1a1a1a">${esc(m.name||t)}<br>
       <span style="font-size:10px;color:#b4b2a9">${esc(t)}${m.market==='US'?' · USD':''}${r.source?' · '+esc(r.source):''}</span></label>
+      <input list="secList" value="${esc(m.sector||'기타')}" data-sec="${esc(t)}" placeholder="섹터"
+        title="섹터 — 개요 탭 도넛 차트에 쓰입니다" style="width:120px;font-size:11.5px${isEtc?';border-color:#d9c68a':''}">
       <input type="number" step="any" value="${r.price??''}" data-tk="${esc(t)}" style="width:100px;text-align:right"></div>`;
   }).join('');
   $('pGrid').querySelectorAll('[data-tk]').forEach(i=>i.onchange=()=>setPrice(i.dataset.tk,i.value));
+  $('pGrid').querySelectorAll('[data-sec]').forEach(i=>i.onchange=()=>setSector(i.dataset.sec,i.value));
   const latest=D.prices.map(p=>p.as_of).filter(Boolean).sort().pop();
   $('pAsOf').textContent='최근 갱신: '+(latest||'-');
 }
@@ -777,7 +784,7 @@ function renderSettings(){
   $('rlIn').querySelectorAll('[data-rl]').forEach(i=>i.onchange=()=>setRule(i.dataset.rl,i.value,+i.dataset.m));
 }
 function render(){
-  renderNav();
+  renderNav(); fillSecList();
   if(view==='dash'){
     const {p,warn}=cur();
     renderTabs(); renderAlerts(p,warn);
@@ -817,10 +824,16 @@ async function addTrade(e){
     exit_reason:side==='매도'?($('f_exit').value||null):null,memo:$('f_memo').value.trim()||null};
   const {error}=await sb.from('pf_trades').insert(row);
   if(error){alert('저장 실패: '+error.message);return;}
-  const m=metaOf(row.ticker);
-  if(!m.ticker) await sb.from('pf_tickers').insert({ticker:row.ticker,name:row.name,sector:'기타',market:ccy==='USD'?'US':'KOSPI'});
+  const m=metaOf(row.ticker), sec=$('f_sector').value.trim();
+  if(!m.ticker){
+    await sb.from('pf_tickers').insert({ticker:row.ticker,name:row.name,
+      sector:sec||'기타',market:ccy==='USD'?'US':'KOSPI'});
+  }else if(sec&&sec!==(m.sector||'')){
+    await sb.from('pf_tickers').update({sector:sec}).eq('ticker',row.ticker);
+  }
   $('fHint').textContent=`${row.name} ${side} ${qty}주 추가 (${row.tid})`;
-  ['f_name','f_ticker','f_qty','f_px','f_tid','f_stop','f_memo'].forEach(i=>$(i).value='');
+  ['f_name','f_ticker','f_qty','f_px','f_tid','f_stop','f_memo','f_sector'].forEach(i=>$(i).value='');
+  $('secHint').textContent='';
   await loadAll(); render();
 }
 async function delTrade(id){
@@ -828,6 +841,43 @@ async function delTrade(id){
   if(!confirm(`${t.trade_date} ${t.name} ${t.side} ${t.qty}주\n삭제할까요?`))return;
   const {error}=await sb.from('pf_trades').delete().eq('id',id);
   if(error){alert('삭제 실패: '+error.message);return;}
+  await loadAll(); render();
+}
+/* 섹터 자동완성 목록 — 폼과 시세 탭이 공유 */
+function fillSecList(){
+  const secs=[...new Set(D.tickers.map(x=>x.sector).filter(s=>s&&s!=='기타'))].sort();
+  $('secList').innerHTML=secs.map(s=>`<option value="${esc(s)}">`).join('');
+}
+
+/* 티커를 입력하면 이미 아는 종목인지 판단해서 종목명·섹터를 채워준다 */
+function onTickerInput(){
+  const tk=$('f_ticker').value.trim();
+  const h=$('secHint'), sec=$('f_sector');
+  if(!tk){h.textContent='';return;}
+  const m=metaOf(tk);
+  if(m.ticker){
+    if(!$('f_name').value.trim()&&m.name)$('f_name').value=m.name;
+    sec.value=m.sector||'';
+    if((m.sector||'기타')==='기타'){
+      h.textContent='등록된 종목인데 섹터가 «기타»입니다. 지금 정해주세요.';
+      h.style.color='#a8863a';
+    }else{
+      h.textContent='등록된 종목입니다. 바꾸면 갱신됩니다.';
+      h.style.color='#b4b2a9';
+    }
+  }else{
+    h.textContent='처음 보는 종목입니다. 섹터를 넣으면 도넛 차트에 제대로 잡힙니다.';
+    h.style.color='#a8863a';
+  }
+}
+
+async function setSector(tk,v){
+  const s=(v||'').trim()||'기타';
+  const m=metaOf(tk);
+  if(s===(m.sector||'기타'))return;
+  const {error}=await sb.from('pf_tickers')
+    .update({sector:s}).eq('ticker',tk);
+  if(error){alert('섹터 저장 실패: '+error.message);return;}
   await loadAll(); render();
 }
 async function setPrice(tk,v){
@@ -884,6 +934,8 @@ $('btnLogout').onclick=async()=>{await sb.auth.signOut();location.reload();};
 $('btnCsv').onclick=exportCSV;
 $('tf').addEventListener('submit',addTrade);
 $('f_side').addEventListener('change',()=>{$('wExit').style.display=$('f_side').value==='매도'?'':'none';});
+$('f_ticker').addEventListener('input',onTickerInput);
+$('f_ticker').addEventListener('change',onTickerInput);
 $('flAcct').addEventListener('change',renderTradeList);
 $('flText').addEventListener('input',renderTradeList);
 $('fxIn').addEventListener('change',e=>setFx(e.target.value));
