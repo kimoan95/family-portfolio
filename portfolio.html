@@ -185,6 +185,9 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="config.js"></script>
 <script>
+/* 화면 상단에 표시됩니다. 배포된 버전이 최신인지 확인하는 용도입니다. */
+const APP_VERSION = 'v3 (섹터입력)';
+
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 let D = {persons:[],accounts:[],baselines:[],trades:[],tickers:[],prices:[],hist:[],settings:{}};
 let view='dash', person='all', pane='overview', cAlloc, cSector, cEquity;
@@ -798,7 +801,7 @@ function render(){
   else if(view==='prices')renderPrices();
   else renderSettings();
   const latest=D.prices.map(p=>p.as_of).filter(Boolean).sort().pop();
-  $('sub').textContent=`거래 ${D.trades.length}건 · 1 USD = ${fx().toLocaleString()}원 · 시세 ${latest||'-'}`;
+  $('sub').textContent=`${APP_VERSION} · 거래 ${D.trades.length}건 · 1 USD = ${fx().toLocaleString()}원 · 시세 ${latest||'-'}`;
 }
 
 /* ── 쓰기 ── */
