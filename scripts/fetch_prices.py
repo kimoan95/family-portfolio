@@ -225,14 +225,24 @@ KR_SOURCES = [kr_naver_mobile, kr_naver_polling, kr_daum, kr_yahoo]
 # ══════════════════════════════════════════════════════════
 #  해외 시세 소스
 # ══════════════════════════════════════════════════════════
+YAHOO_ERR = []   # 야후 실패 사유 (마지막에 한 번만 출력)
+
+
 def yahoo_chart(symbol):
-    """야후 chart API 공통. 프리/애프터장 값이 있으면 우선."""
+    """야후 chart API 공통. 프리/애프터장 값이 있으면 우선.
+
+    ⚠️ 야후는 데이터센터 IP(GitHub Actions 등)를 차단하는 일이 잦습니다.
+       실패해도 다른 소스가 받아주므로 치명적이지 않습니다.
+    """
     for host in ("query1", "query2"):
         try:
             r = requests.get(
                 f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}",
                 params={"interval": "1d", "range": "1d"}, headers=UA, timeout=15)
-            r.raise_for_status()
+            if r.status_code != 200:
+                if len(YAHOO_ERR) < 3:
+                    YAHOO_ERR.append(f"{symbol} {host} HTTP {r.status_code}: {r.text[:120]}")
+                continue
             meta = r.json()["chart"]["result"][0]["meta"]
             price = num(meta.get("postMarketPrice")) or num(meta.get("preMarketPrice")) \
                     or num(meta.get("regularMarketPrice"))
@@ -242,7 +252,9 @@ def yahoo_chart(symbol):
             pct = round((price - prev) / prev * 100, 2) if prev else None
             return {"price": price, "change_pct": pct,
                     "as_of": "yahoo", "source": "yahoo"}
-        except Exception:
+        except Exception as e:
+            if len(YAHOO_ERR) < 3:
+                YAHOO_ERR.append(f"{symbol} {host} {type(e).__name__}: {str(e)[:100]}")
             continue
     return None
 
@@ -252,11 +264,13 @@ def us_yahoo(ticker):
 
 
 def us_stooq(ticker):
-    """stooq CSV. 형식: Symbol,Date,Time,Open,High,Low,Close,Volume"""
-    r = requests.get("https://stooq.com/q/l/",
-                     params={"s": f"{ticker.lower()}.us", "f": "sd2t2ohlcv",
-                             "h": "", "e": "csv"},
-                     headers=UA, timeout=15)
+    """stooq CSV. 형식: Symbol,Date,Time,Open,High,Low,Close,Volume
+
+    params dict 로 넘기면 값 없는 플래그(h)가 h= 로 인코딩돼 404가 납니다.
+    쿼리를 문자열로 직접 붙여야 합니다.
+    """
+    url = f"https://stooq.com/q/l/?s={ticker.lower()}.us&f=sd2t2ohlcv&h&e=csv"
+    r = requests.get(url, headers=UA, timeout=15)
     r.raise_for_status()
     lines = [l for l in r.text.strip().split("\n") if l]
     if len(lines) < 2:
@@ -288,7 +302,50 @@ def us_google(ticker):
     return None
 
 
-US_SOURCES = [us_yahoo, us_stooq, us_google]
+def us_naver(ticker):
+    """네이버 해외주식. 국내와 같은 계열이라 GitHub IP에서도 잘 열립니다.
+
+    심볼 접미사: .O(나스닥) .N(NYSE) .A(AMEX) — 어느 시장인지 모르므로 차례로 시도.
+    """
+    last = None
+    for suf in (".O", ".N", ".A", ""):
+        try:
+            r = requests.get(f"https://api.stock.naver.com/stock/{ticker}{suf}/basic",
+                             headers=UA, timeout=15)
+            if r.status_code != 200:
+                last = f"HTTP {r.status_code}"
+                continue
+            j = r.json()
+            price = num(j.get("closePrice") or j.get("stockExchangeType", {}).get("closePrice"))
+            if not price:
+                last = "가격 없음"
+                continue
+            pct = num(str(j.get("fluctuationsRatio") or "").replace("%", ""))
+            return {"price": price, "change_pct": pct,
+                    "as_of": j.get("localTradedAt") or f"naver{suf}",
+                    "source": "naver-us"}
+        except Exception as e:
+            last = f"{type(e).__name__}"
+    return None
+
+
+def us_stockanalysis(ticker):
+    """stockanalysis.com HTML에서 현재가 파싱 (최후 수단)."""
+    r = requests.get(f"https://stockanalysis.com/stocks/{ticker.lower()}/",
+                     headers=UA, timeout=15)
+    r.raise_for_status()
+    m = re.search(r'"regularMarketPrice"\s*:\s*([\d.]+)', r.text) or \
+        re.search(r'data-test="quote-price"[^>]*>\s*\$?([\d,.]+)', r.text) or \
+        re.search(r'>\$([\d,]+\.\d{2})<', r.text)
+    price = num(m.group(1)) if m else None
+    if not price:
+        return None
+    return {"price": price, "change_pct": None,
+            "as_of": "stockanalysis", "source": "stockanalysis"}
+
+
+# 순서가 곧 우선순위. 네이버를 앞에 둔 이유는 GitHub 서버에서 야후가 자주 막히기 때문.
+US_SOURCES = [us_naver, us_stooq, us_stockanalysis, us_yahoo, us_google]
 
 
 # ══════════════════════════════════════════════════════════
@@ -318,7 +375,7 @@ def fx_naver():
     return num(rows[0].get("closePrice")) if rows else None
 
 
-FX_SOURCES = [fx_yahoo, fx_erapi, fx_naver]
+FX_SOURCES = [fx_erapi, fx_naver, fx_yahoo]
 
 
 # ══════════════════════════════════════════════════════════
@@ -596,6 +653,11 @@ def main():
             fx = None
         except Exception as e:
             print(f"  ✗ {fn.__name__}: {type(e).__name__} {str(e)[:60]}")
+
+    if YAHOO_ERR:
+        print("\n── 야후 실패 사유 (참고) ──")
+        for e in YAHOO_ERR:
+            print(f"  {e}")
 
     print("\n── 소스별 집계 ──")
     for src, d in sorted(TALLY.items()):
