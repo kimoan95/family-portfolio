@@ -15,8 +15,10 @@
   SUPABASE_URL            프로젝트 URL
   SUPABASE_SERVICE_KEY    service_role(또는 sb_secret_) 키
   SUPABASE_OWNER_UID      본인 UUID
-  FORCE_FETCH=1           (선택) 장 시간 무시하고 강제 수집
-  KIWOOM_APP_KEY/SECRET   (선택) 국내 실시간 시세
+  KIWOOM_APP_KEY/SECRET   (선택) 키움 시세. 없으면 무료 소스만 씁니다.
+  KIWOOM_ENV              (선택) real | mock — 시세 조회는 real 이어야 합니다.
+  KIWOOM_US_PATH          (선택) 해외 현재가 경로 재정의
+  KIWOOM_US_API_ID        (선택) 해외 현재가 api-id 재정의
 
 의존성: pip install requests
 """
@@ -115,27 +117,25 @@ def load_holdings():
 # ══════════════════════════════════════════════════════════
 #  장 시간
 # ══════════════════════════════════════════════════════════
-def _force():
-    return os.environ.get("FORCE_FETCH") == "1"
+def now_kst():
+    return datetime.now(ZoneInfo("Asia/Seoul")) if ZoneInfo else datetime.now(timezone.utc)
 
 
-def kr_market_open():
-    if _force() or ZoneInfo is None:
-        return True
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
-    if now.weekday() >= 5:
-        return False
-    t = now.hour * 60 + now.minute
-    return 9 * 60 <= t <= 15 * 60 + 35
+def market_note():
+    """지금이 장중인지 장외인지 — 로그에 남기기만 하고 수집은 항상 한다.
 
-
-def us_market_open():
-    if _force() or ZoneInfo is None:
-        return True
-    now = datetime.now(ZoneInfo("America/New_York"))
-    if now.weekday() >= 5:
-        return False
-    return 4 <= now.hour < 20
+    장이 닫혀 있어도 소스는 '마지막 종가'를 돌려준다. 종가를 반영하지 않으면
+    주말·야간 내내 대시보드가 옛날 값을 보여주게 된다. 실행 빈도는
+    스크립트가 아니라 워크플로 cron에서 조절한다.
+    """
+    if ZoneInfo is None:
+        return "시간대 판별 불가"
+    kr = datetime.now(ZoneInfo("Asia/Seoul"))
+    us = datetime.now(ZoneInfo("America/New_York"))
+    kr_open = kr.weekday() < 5 and 9 * 60 <= kr.hour * 60 + kr.minute <= 15 * 60 + 30
+    us_open = us.weekday() < 5 and 4 <= us.hour < 20
+    return (f"KST {kr:%m-%d %H:%M} 국내 {'장중' if kr_open else '장외(종가)'} · "
+            f"ET {us:%m-%d %H:%M} 미국 {'장중/연장' if us_open else '장외(종가)'}")
 
 
 def num(s):
@@ -324,41 +324,152 @@ FX_SOURCES = [fx_yahoo, fx_erapi, fx_naver]
 # ══════════════════════════════════════════════════════════
 #  키움 (선택)
 # ══════════════════════════════════════════════════════════
-def fetch_kr_kiwoom(codes):
+# ── 설정 ────────────────────────────────────────────────────
+# 국내 현재가 (문서 확인된 값)
+KIWOOM_KR_PATH   = "/api/dostk/stkinfo"
+KIWOOM_KR_API_ID = "ka10001"
+
+# 해외 현재가 — ⚠️ 아직 실제 값으로 확인하지 못했습니다.
+#   키움 개발자센터 문서에서 '해외주식 현재가' api-id 를 찾아 아래 두 줄만 바꾸면 됩니다.
+#   값이 틀려도 무료 소스(야후 등)로 자동 대체되므로 시세가 끊기지는 않습니다.
+KIWOOM_US_PATH   = os.environ.get("KIWOOM_US_PATH",   "/api/dostk/ovsstkinfo")
+KIWOOM_US_API_ID = os.environ.get("KIWOOM_US_API_ID", "ka20001")
+
+# 가격이 담겨 있을 법한 필드 후보 (응답 스펙이 확인되면 정리)
+PRICE_KEYS = ("cur_prc", "last", "prpr", "stck_prpr", "price", "close",
+              "ovrs_prpr", "last_prc", "trad_prc")
+
+_TOKEN = None   # 한 번 받아서 재사용
+
+
+def kiwoom_base():
+    env = os.environ.get("KIWOOM_ENV", "mock")
+    return ("https://api.kiwoom.com" if env == "real"
+            else "https://mockapi.kiwoom.com"), env
+
+
+def kiwoom_token():
+    """토큰을 한 번만 발급받아 재사용. 키가 없으면 None."""
+    global _TOKEN
+    if _TOKEN is not None:
+        return _TOKEN or None
+
     key, sec = os.environ.get("KIWOOM_APP_KEY"), os.environ.get("KIWOOM_APP_SECRET")
     if not key or not sec:
-        return {}
-    base = ("https://api.kiwoom.com" if os.environ.get("KIWOOM_ENV") == "real"
-            else "https://mockapi.kiwoom.com")
+        print("키움: 키 없음 → 무료 소스만 사용")
+        _TOKEN = ""
+        return None
+
+    base, env = kiwoom_base()
+    print(f"키움: {env} 환경 ({base})")
+    if env != "real":
+        print("  ⚠️ 모의(mock) 서버는 시세 조회가 제한됩니다. KIWOOM_ENV 를 real 로 하세요.")
+
     try:
         t = requests.post(f"{base}/oauth2/token",
                           json={"grant_type": "client_credentials",
-                                "appkey": key, "secretkey": sec},
-                          timeout=15)
-        t.raise_for_status()
-        token = t.json().get("token") or t.json().get("access_token")
-        if not token:
-            return {}
+                                "appkey": key, "secretkey": sec}, timeout=15)
+        if t.status_code != 200:
+            print(f"  ✗ 토큰 발급 실패 HTTP {t.status_code}: {t.text[:200]}", file=sys.stderr)
+            _TOKEN = ""
+            return None
+        j = t.json()
+        tok = j.get("token") or j.get("access_token")
+        if not tok:
+            print(f"  ✗ 응답에 토큰 없음: {t.text[:200]}", file=sys.stderr)
+            _TOKEN = ""
+            return None
+        print("  ✓ 토큰 발급 성공")
+        _TOKEN = tok
+        return tok
     except Exception as e:
-        print(f"키움 토큰 실패: {e}", file=sys.stderr)
-        return {}
+        print(f"  ✗ 토큰 요청 예외: {type(e).__name__} {e}", file=sys.stderr)
+        _TOKEN = ""
+        return None
 
-    out = {}
+
+def pick_price(j):
+    """응답 dict에서 가격처럼 보이는 값을 찾아낸다."""
+    if not isinstance(j, dict):
+        return None
+    for k in PRICE_KEYS:
+        if k in j:
+            v = num(str(j[k]).lstrip("+-"))
+            if v:
+                return v
+    # 한 겹 안쪽에 들어있는 경우 (output / data 등)
+    for k in ("output", "output1", "data", "result"):
+        v = j.get(k)
+        if isinstance(v, dict):
+            got = pick_price(v)
+            if got:
+                return got
+        if isinstance(v, list) and v and isinstance(v[0], dict):
+            got = pick_price(v[0])
+            if got:
+                return got
+    return None
+
+
+def kiwoom_quote(codes, path, api_id, body_key, label, extra=None):
+    """키움 시세 조회 공통. 실패해도 예외를 밖으로 내지 않는다."""
+    token = kiwoom_token()
+    if not token:
+        return {}
+    base, _ = kiwoom_base()
+    h = {"authorization": f"Bearer {token}", "api-id": api_id,
+         "content-type": "application/json"}
+
+    out, shown = {}, False
     for code in codes:
+        body = {body_key: code}
+        if extra:
+            body.update(extra)
         try:
-            r = requests.post(f"{base}/api/dostk/stkinfo",
-                              headers={"authorization": f"Bearer {token}",
-                                       "api-id": "ka10001",
-                                       "content-type": "application/json"},
-                              json={"stk_cd": code}, timeout=15)
-            r.raise_for_status()
-            px = num(str(r.json().get("cur_prc", "")).lstrip("+-"))
+            r = requests.post(f"{base}{path}", headers=h, json=body, timeout=15)
+            if r.status_code != 200:
+                if not shown:
+                    print(f"  ✗ {label} HTTP {r.status_code}: {r.text[:200]}", file=sys.stderr)
+                    shown = True
+                continue
+            j = r.json()
+            px = pick_price(j)
             if px:
                 out[code] = {"price": px, "change_pct": None,
                              "as_of": "kiwoom", "source": "kiwoom"}
-        except Exception:
-            pass
+            elif not shown:
+                # 응답은 왔는데 가격 필드를 못 찾음 → 구조를 통째로 남긴다
+                print(f"  ✗ {label} 가격 필드 못 찾음. 응답 구조:", file=sys.stderr)
+                print(f"     {json.dumps(j, ensure_ascii=False)[:500]}", file=sys.stderr)
+                shown = True
+        except Exception as e:
+            if not shown:
+                print(f"  ✗ {label} 예외: {type(e).__name__} {e}", file=sys.stderr)
+                shown = True
+
+    if out:
+        print(f"  ✓ {label} {len(out)}종목 수집")
     return out
+
+
+def fetch_kr_kiwoom(codes):
+    """국내 — 키움 (키 없으면 빈 dict)."""
+    if not codes:
+        return {}
+    return kiwoom_quote(codes, KIWOOM_KR_PATH, KIWOOM_KR_API_ID,
+                        "stk_cd", "키움 국내")
+
+
+def fetch_us_kiwoom(codes):
+    """해외 — 키움. api-id/경로가 아직 미확인이라 실패하면 조용히 야후로 넘어간다.
+
+    ⚠️ 정확한 값을 알게 되면 KIWOOM_US_PATH / KIWOOM_US_API_ID 만 고치면 됩니다.
+       GitHub Secrets 에 같은 이름으로 넣어도 덮어쓸 수 있습니다.
+    """
+    if not codes or not os.environ.get("KIWOOM_APP_KEY"):
+        return {}
+    return kiwoom_quote(codes, KIWOOM_US_PATH, KIWOOM_US_API_ID,
+                        "stk_cd", "키움 해외", extra={"exchange": "NASDAQ"})
 
 
 # ══════════════════════════════════════════════════════════
@@ -455,12 +566,8 @@ def collect(items, sources, currency, preset=None):
 
 
 def main():
-    do_kr, do_us = kr_market_open(), us_market_open()
-    print(f"장 상태 → 국내 {'열림' if do_kr else '닫힘'}, 미국 {'열림' if do_us else '닫힘'}"
-          + ("  (FORCE_FETCH)" if _force() else ""))
-    if not do_kr and not do_us:
-        print("두 시장 모두 장외 시간이라 건너뜁니다.")
-        return
+    print(market_note())
+    print("장외라도 마지막 종가를 가져옵니다.\n")
 
     try:
         KR, US = load_holdings()
@@ -470,12 +577,12 @@ def main():
     print(f"보유 종목 → 국내 {len(KR)}개, 해외 {len(US)}개\n")
 
     rows = []
-    if do_kr and KR:
+    if KR:
         print("── 국내 ──")
         rows += collect(KR, KR_SOURCES, "KRW", fetch_kr_kiwoom(list(KR)))
-    if do_us and US:
+    if US:
         print("── 해외 ──")
-        rows += collect(US, US_SOURCES, "USD")
+        rows += collect(US, US_SOURCES, "USD", fetch_us_kiwoom(list(US)))
 
     print("\n── 환율 ──")
     fx = None
