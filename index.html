@@ -775,7 +775,7 @@ function renderOpenCard(t){
   const plannedRisk = !isNaN(stop) ? Math.abs(entry-stop)*mult*openQty : null;
   const c = calcTrade(t);   // 부분 청산이 있으면 지금까지 확정 손익
   const meta=[];
-  if(t.entryTime) meta.push(`⏱ ${esc(t.entryTime)}`);
+  if(t.entryTime){ const _s=sessionOf(t.date,t.entryTime); meta.push(`⏱ ${esc(t.entryTime)}${_s?` · ${_s}`:''}`); }
   if(t.setup) meta.push(`<span class="tag">${esc(t.setup)}</span>`);
   if(t.bias!=='' && t.bias!=null){
     const bv=parseInt(t.bias,10);
@@ -899,7 +899,7 @@ function renderTradeCard(t){
   const delLabel = state.confirmDeleteId===t.id ? '확인' : '삭제';
   const delCls = state.confirmDeleteId===t.id ? 'icon-btn danger-active' : 'icon-btn';
   const meta=[];
-  if(t.entryTime) meta.push(`⏱ ${esc(t.entryTime)}`);
+  if(t.entryTime){ const _s=sessionOf(t.date,t.entryTime); meta.push(`⏱ ${esc(t.entryTime)}${_s?` · ${_s}`:''}`); }
   if(t.setup) meta.push(`<span class="tag">${esc(t.setup)}</span>`);
   if(t.bias!=='' && t.bias!=null){
     const bv=parseInt(t.bias,10);
@@ -1234,6 +1234,40 @@ function renderStats(){
     </div>`;
   }
 
+  // ── 세션별 성과 ───────────────────────────────────────────
+  // 진입 시간에서 세션을 자동으로 뽑아 묶는다. 별도 입력이 필요 없다.
+  const withSess = state.trades
+    .map(t => ({ t, sess: sessionOf(t.date, t.entryTime) }))
+    .filter(x => x.sess && calcTrade(x.t));
+  if(withSess.length >= 3){
+    const bySess = SESSIONS
+      .map(name => ({ name, s: statsOf(withSess.filter(x=>x.sess===name).map(x=>x.t)) }))
+      .filter(r => r.s.count > 0)
+      .sort((a,b) => b.s.avgR - a.s.avgR);
+    const best = bySess[0], worst = bySess[bySess.length-1];
+    html += `<div class="fac-card">
+      <h3 style="margin:0 0 4px;">세션별 성과</h3>
+      <p class="fac-hint" style="margin:0 0 8px;">진입 시간에서 자동으로 분류합니다. 어느 시간대가 실제로 돈이 되는지 보세요.${
+        bySess.length>1 && best.s.count>=5 && worst.s.count>=5
+          ? ` 지금은 <b>${best.name}</b>이 가장 좋고 <b>${worst.name}</b>이 가장 나쁩니다.` : ''}</p>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <tr style="color:var(--muted);text-align:right;">
+          <th style="text-align:left;font-weight:600;padding:6px 0;">세션</th>
+          <th style="font-weight:600;">건수</th><th style="font-weight:600;">승률</th>
+          <th style="font-weight:600;">평균R</th><th style="font-weight:600;">순손익</th>
+        </tr>
+        ${bySess.map(r=>`<tr style="border-top:1px solid var(--border);text-align:right;">
+          <td style="text-align:left;padding:8px 0;">${r.name}</td>
+          <td>${r.s.count}</td>
+          <td>${r.s.winRate.toFixed(0)}%</td>
+          <td class="${r.s.avgR>=0?'profit':'loss'}" style="font-weight:700;">${r.s.avgR>=0?'+':''}${r.s.avgR.toFixed(2)}</td>
+          <td class="${r.s.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(r.s.net)}</td>
+        </tr>`).join('')}
+      </table>
+      <p class="fac-hint" style="margin-top:8px;">시간 기록된 거래 ${withSess.length}건 / 전체 ${state.trades.length}건 · 표본 20건 이상부터 신뢰할 만합니다.</p>
+    </div>`;
+  }
+
   html += state.trades.length>0 ? `<button class="clear-all" onclick="clearAll()">${clearLabel}</button>` : '';
   return html;
 }
@@ -1286,7 +1320,8 @@ function renderModal(){
       <div class="two-col">
         <div class="field">
           <label>진입 시간 (선택)</label>
-          <input type="time" value="${esc(f.entryTime)}" oninput="state.form.entryTime=this.value" />
+          <input type="time" value="${esc(f.entryTime)}" oninput="state.form.entryTime=this.value; updateSessionHint();" />
+          <span class="muted small" id="session-hint" style="display:block;margin-top:4px;">${f.entryTime?`→ ${sessionOf(f.date,f.entryTime)} 세션`:'시간을 넣으면 세션이 자동으로 붙습니다'}</span>
         </div>
         <div class="field">
           <label>매매 근거/셋업 (선택)</label>
@@ -1321,6 +1356,14 @@ function renderDirectionButtons(){
   return `<button class="opt-btn ${state.form.direction==='long'?'active':''}" onclick="selectDirection('long')">롱</button>
     <button class="opt-btn ${state.form.direction==='short'?'active':''}" onclick="selectDirection('short')">숏</button>`;
 }
+function updateSessionHint(){
+  const el = document.getElementById('session-hint');
+  if(!el) return;
+  const f = state.form;
+  const sess = sessionOf(f.date, f.entryTime);
+  el.textContent = sess ? `→ ${sess} 세션` : '시간을 넣으면 세션이 자동으로 붙습니다';
+}
+
 function updatePreview(){
   const f = state.form;
   const c = calcTrade(f);
@@ -1425,6 +1468,39 @@ function openExit(id){
 }
 function closeExit(){ state.exitFor=null; state.exitForm={price:'',qty:'',time:'',reason:''}; render(); }
 function nowHM(){ const d=new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+
+/* ── 거래 세션 자동 판정 ─────────────────────────────────────
+   입력한 시간(한국시간)을 뉴욕시간으로 바꿔서 어느 세션인지 정한다.
+   서머타임은 브라우저의 시간대 데이터가 알아서 처리하므로 직접 계산하지 않는다.
+
+   기준 (뉴욕시간):
+     18:00~03:00  아시아      — 도쿄·홍콩. 보통 레인지가 좁다
+     03:00~08:00  런던        — 유럽 개장. 변동성이 올라온다
+     08:00~09:30  뉴욕 프리   — 지표 발표가 몰리는 구간
+     09:30~16:00  뉴욕 정규   — 현물 개장. 거래량 최대
+     16:00~18:00  마감 후     — 유동성이 얇다
+*/
+const SESSIONS = ['아시아','런던','뉴욕 프리','뉴욕 정규','마감 후'];
+
+function sessionOf(dateStr, timeStr){
+  if(!dateStr || !timeStr || !/^\d{1,2}:\d{2}$/.test(timeStr)) return '';
+  try{
+    // 한국시간으로 해석 → 뉴욕시간의 시·분을 얻는다
+    const dt = new Date(`${dateStr}T${timeStr.padStart(5,'0')}:00+09:00`);
+    if(isNaN(dt)) return '';
+    const parts = new Intl.DateTimeFormat('en-US',{
+      timeZone:'America/New_York', hour:'2-digit', minute:'2-digit', hour12:false
+    }).formatToParts(dt);
+    const h = +parts.find(x=>x.type==='hour').value % 24;
+    const m = +parts.find(x=>x.type==='minute').value;
+    const t = h*60 + m;
+    if(t >= 18*60 || t < 3*60)        return '아시아';
+    if(t < 8*60)                      return '런던';
+    if(t < 9*60+30)                   return '뉴욕 프리';
+    if(t < 16*60)                     return '뉴욕 정규';
+    return '마감 후';
+  }catch(e){ return ''; }
+}
 function submitExit(){
   const t = state.trades.find(x=>x.id===state.exitFor); if(!t) return;
   const f = state.exitForm;
@@ -1503,8 +1579,8 @@ function buildAnalysisText(){
     .sort((a,b)=>a.date.localeCompare(b.date));
   const head=`# 매매일지 (내보낸 시각: ${new Date().toLocaleString('ko-KR')})\n`+
     `요약: 총 ${s.total}건 · 누적 순손익 ${fmt(s.totalNet)} · 누적 R ${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R · 승률 ${s.winRate.toFixed(0)}% · PF ${s.pf===Infinity?'∞':s.pf.toFixed(2)}\n\n`;
-  const cols=`| 날짜 | 시간 | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | 셋업 | 바이어스 |\n`+
-    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
+  const cols=`| 날짜 | 시간 | 세션 | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | 셋업 | 바이어스 |\n`+
+    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
   const body=rows.map(t=>{
     const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
     const dir=t.direction==='long'?'롱':'숏';
@@ -1512,7 +1588,7 @@ function buildAnalysisText(){
     const bTxt=(bv==null||isNaN(bv))?'-':`${bv>0?'+':''}${bv}(${zoneOf(bv).label})`;
     const rrTxt = t.c.rr!=null ? `1:${t.c.rr.toFixed(2)}` : '-';
     const rTxt  = t.c.rMultiple!=null ? `${t.c.rMultiple>=0?'+':''}${t.c.rMultiple.toFixed(2)}` : '-';
-    return `| ${t.date} | ${t.entryTime||'-'} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.win?'승':'패'} | ${t.setup||'-'} | ${bTxt} |`;
+    return `| ${t.date} | ${t.entryTime||'-'} | ${sessionOf(t.date,t.entryTime)||'-'} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.win?'승':'패'} | ${t.setup||'-'} | ${bTxt} |`;
   }).join('\n');
   return head+cols+body+'\n';
 }
@@ -1522,11 +1598,11 @@ function exportForAnalysis(){
 }
 function downloadCSV(){
   const rows=state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort((a,b)=>a.date.localeCompare(b.date));
-  const header=['날짜','시간','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','셋업','바이어스'];
+  const header=['날짜','시간','세션','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','셋업','바이어스'];
   const csv=[header.join(',')].concat(rows.map(t=>{
     const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
     const cell=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;
-    return [t.date,t.entryTime||'',label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit,t.stop||'',
+    return [t.date,t.entryTime||'',sessionOf(t.date,t.entryTime)||'',label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit,t.stop||'',
       t.c.net.toFixed(2),t.c.rr!=null?t.c.rr.toFixed(2):'',t.c.rMultiple!=null?t.c.rMultiple.toFixed(2):'',t.c.win?'승':'패',t.setup||'',
       (t.bias===''||t.bias==null)?'':t.bias].map(cell).join(',');
   })).join('\n');
