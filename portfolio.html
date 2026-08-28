@@ -145,7 +145,7 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
         <div><label>손절가</label><input type="number" id="f_stop" step="any"></div>
         <div><label>전략 *</label><select id="f_strat" required><option value="">선택하세요</option><option>돌파매매</option><option>눌림목매매</option><option>추세추종</option><option>역추세매매</option><option>갭매매</option><option>박스권매매</option><option>신고가매매</option><option>거래량급증매매</option><option>실적매매</option><option>공시매매</option><option>테마모멘텀매매</option><option>리포트매매</option><option>감매매</option><option>FOMO매매</option><option>물타기</option><option>단순단타</option></select></div>
         <div><label>심리 *</label><select id="f_mood" required><option value="">선택하세요</option><option>확신</option><option>불안/조급함</option><option>FOMO</option><option>지루함</option><option>욕심</option><option>후회</option><option>평온</option></select></div>
-        <div id="wExit" style="display:none"><label>청산사유 *</label><select id="f_exit"><option value="">선택하세요</option><option>목표가도달</option><option>손절가도달</option><option>감정적조기청산</option><option>추가판단후연장</option><option>기타</option></select></div>
+        <div id="wExit" style="display:none"><label>청산사유 *</label><select id="f_exit"><option value="">선택하세요</option><option>목표가도달</option><option>트레일링스탑</option><option>손절가도달</option><option>감정적조기청산</option><option>추가판단후연장</option><option>기타</option></select></div>
         <div style="grid-column:1/-1"><label>메모</label><input type="text" id="f_memo"></div>
         <div class="frow"><button type="submit" class="pri">거래 추가</button><span id="fHint" class="note" style="margin:0"></span></div>
       </form>
@@ -192,7 +192,7 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 <script src="config.js"></script>
 <script>
 /* 화면 상단에 표시됩니다. 배포된 버전이 최신인지 확인하는 용도입니다. */
-const APP_VERSION = 'v7';
+const APP_VERSION = 'v8';
 
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 let D = {persons:[],accounts:[],baselines:[],trades:[],tickers:[],prices:[],hist:[],settings:{}};
@@ -970,7 +970,7 @@ async function addTrade(e){
   const side=$('f_side').value;
   if(!$('f_strat').value){alert('전략을 선택하세요.\n\n나중에 어떤 방식이 돈이 되는지 분석하려면 반드시 필요합니다.\n솔직하게 — 감으로 샀으면 "감매매", 남들 사길래 샀으면 "FOMO매매"를 고르세요.');return;}
   if(!$('f_mood').value){alert('심리 상태를 선택하세요.\n\n감정과 성과의 관계는 나중에 가장 유용한 데이터가 됩니다.');return;}
-  if(side==='매도'&&!$('f_exit').value){alert('청산사유를 선택하세요.\n\n계획대로 나왔는지 vs 감정으로 나왔는지가 시스템 개선의 핵심입니다.');return;}
+  if(side==='매도'&&!$('f_exit').value){alert('청산사유를 선택하세요.\n\n계획대로 나왔는지 vs 감정으로 나왔는지가 시스템 개선의 핵심입니다.\n\n손절을 올려두고 그 선에 걸려 나왔다면 «트레일링스탑» 입니다 — «손절가도달»과 구분해야 이익 거래가 손실처럼 보이지 않습니다.');return;}
   let risk=0;
   if(side==='매수'&&stop&&stop<px){const rl=(px-stop)*qty;risk=Math.round(ccy==='USD'?rl*f:rl);}
   const row={account_id:acct.id,seq:nextSeq(),trade_date:$('f_date').value,side,
