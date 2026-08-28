@@ -1,33 +1,45 @@
 name: 시세 자동 갱신
 
-# 10분마다 실행하되, 실제로 시세를 긁을지는 스크립트가 장 시간을 보고 판단합니다.
-#  - 국내주식/ETF: 평일 09:00~15:35 KST 에만 수집
-#  - 미국주식: 평일 프리장~애프터장(미 동부시간 04:00~20:00, 서머타임 자동 반영)에만 수집
-#  - 두 시장 모두 닫혀 있으면 아무것도 안 하고 즉시 종료 (Actions 시간 절약)
-# 간격을 바꾸려면 아래 cron 숫자만 수정:
-#   "*/5 * * * *"=5분  "*/10 * * * *"=10분  "*/15 * * * *"=15분  "*/30 * * * *"=30분
-# 참고1: GitHub Actions cron 최소 간격은 5분이며, 부하 시 몇 분 밀릴 수 있습니다.
-# 참고2: 무료 스크래핑 소스는 데이터 자체가 15~20분 지연이라 10분보다 촘촘히 해도
-#        같은 값이 반복될 뿐이고, 너무 자주 긁으면 차단될 수 있습니다.
-#        더 최신값을 원하면 KIS API 키(Secrets)를 넣고 5분으로 낮추는 걸 권장합니다.
-# 참고3: 비공개 저장소는 Actions 무료 월 2,000분 한도가 있습니다(공개 저장소는 무제한).
+# ⚠️ GitHub Actions 의 schedule 은 "정시 실행"을 보장하지 않습니다.
+#    부하가 몰리면 그 회차를 통째로 건너뜁니다. 그래서:
+#      1) 0분·30분 같은 "많이 몰리는 시각"을 피해 7/27/47분에 걸었습니다.
+#      2) 한 번 걸러도 20분 뒤 다음 회차가 받아주도록 촘촘히 뒀습니다.
+#
+# cron 은 UTC 기준입니다.  KST = UTC+9,  ET(서머타임) = UTC-4
+#
+#   7,17,…,57 0-6 UTC = KST 09:07~15:57  → 국내장 10분마다 (네이버 실시간)
+#   47       6    UTC = KST 15:47        → 국내 종가 확정
+#   7,37      13-23 UTC = KST 22:07~08:37 → 미국 30분마다 (소스가 15분 지연)
+#   37       0    UTC = ET  20:37        → 미국 애프터 마감 후 종가 확정
+#
+# 공개(Public) 저장소라 Actions 시간 제한이 없습니다.
+# 국내는 네이버가 실시간이라 촘촘하게, 미국은 소스가 15분 지연이라 30분 간격으로 둡니다.
+
 on:
   schedule:
-    - cron: "*/10 * * * *"   # 매 10분 (장 시간에만 실제 수집)
-  workflow_dispatch:          # 수동 실행 버튼도 제공
+    - cron: "7,17,27,37,47,57 0-6 * * 1-5"   # 국내장 (10분 간격 — 네이버는 실시간)
+    - cron: "47 6 * * 1-5"           # 국내 종가
+    - cron: "7,37 13-23 * * 1-5"     # 미국장 (30분 간격)
+    - cron: "37 0 * * 2-6"           # 미국 종가 (ET 전날 20:37)
+  workflow_dispatch:                 # 수동 실행 버튼
+
+# 이전 실행이 아직 돌고 있으면 취소하고 최신 것만 남긴다 (밀림 방지)
+concurrency:
+  group: fetch-prices
+  cancel-in-progress: true
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install requests beautifulsoup4
+      - run: pip install requests
       - name: 시세 수집 및 저장
         env:
-          FORCE_FETCH: "1"
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SUPABASE_OWNER_UID: ${{ secrets.SUPABASE_OWNER_UID }}
