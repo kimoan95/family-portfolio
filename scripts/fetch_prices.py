@@ -138,6 +138,24 @@ def market_note():
             f"ET {us:%m-%d %H:%M} 미국 {'장중/연장' if us_open else '장외(종가)'}")
 
 
+def scrub(text):
+    """로그에 남기기 전에 비밀값을 지운다.
+
+    ⚠️ 공개(Public) 저장소는 Actions 로그도 공개됩니다.
+       서버가 오류 응답에 앱키를 되돌려주는 경우가 있어, 응답 본문을
+       그대로 찍으면 키가 그대로 노출됩니다.
+    """
+    t = str(text)
+    for name in ("KIWOOM_APP_KEY", "KIWOOM_APP_SECRET",
+                 "SUPABASE_SERVICE_KEY", "SUPABASE_URL", "SUPABASE_OWNER_UID"):
+        v = os.environ.get(name)
+        if v and len(v) > 6:
+            t = t.replace(v, f"<{name}>")
+    # 혹시 모를 형태(appkey":"xxx")도 통째로 가린다
+    t = re.sub(r'("?(?:appkey|secretkey|app_key|app_secret|token|access_token)"?\s*[:=]\s*"?)[^",}\s]+',
+               r"\1<가림>", t, flags=re.I)
+    return t
+
 def num(s):
     if s is None:
         return None
@@ -241,7 +259,7 @@ def yahoo_chart(symbol):
                 params={"interval": "1d", "range": "1d"}, headers=UA, timeout=15)
             if r.status_code != 200:
                 if len(YAHOO_ERR) < 3:
-                    YAHOO_ERR.append(f"{symbol} {host} HTTP {r.status_code}: {r.text[:120]}")
+                    YAHOO_ERR.append(f"{symbol} {host} HTTP {r.status_code}: {scrub(r.text)[:120]}")
                 continue
             meta = r.json()["chart"]["result"][0]["meta"]
             price = num(meta.get("postMarketPrice")) or num(meta.get("preMarketPrice")) \
@@ -254,7 +272,7 @@ def yahoo_chart(symbol):
                     "as_of": "yahoo", "source": "yahoo"}
         except Exception as e:
             if len(YAHOO_ERR) < 3:
-                YAHOO_ERR.append(f"{symbol} {host} {type(e).__name__}: {str(e)[:100]}")
+                YAHOO_ERR.append(f"{symbol} {host} {type(e).__name__}: {scrub(e)[:100]}")
             continue
     return None
 
@@ -399,6 +417,8 @@ PRICE_KEYS = ("cur_prc", "last", "prpr", "stck_prpr", "price", "close",
 _TOKEN = None   # 한 번 받아서 재사용
 
 
+
+
 def kiwoom_base():
     env = os.environ.get("KIWOOM_ENV", "mock")
     return ("https://api.kiwoom.com" if env == "real"
@@ -427,20 +447,20 @@ def kiwoom_token():
                           json={"grant_type": "client_credentials",
                                 "appkey": key, "secretkey": sec}, timeout=15)
         if t.status_code != 200:
-            print(f"  ✗ 토큰 발급 실패 HTTP {t.status_code}: {t.text[:200]}", file=sys.stderr)
+            print(f"  ✗ 토큰 발급 실패 HTTP {t.status_code}: {scrub(t.text)[:200]}", file=sys.stderr)
             _TOKEN = ""
             return None
         j = t.json()
         tok = j.get("token") or j.get("access_token")
         if not tok:
-            print(f"  ✗ 응답에 토큰 없음: {t.text[:200]}", file=sys.stderr)
+            print(f"  ✗ 응답에 토큰 없음: {scrub(t.text)[:200]}", file=sys.stderr)
             _TOKEN = ""
             return None
         print("  ✓ 토큰 발급 성공")
         _TOKEN = tok
         return tok
     except Exception as e:
-        print(f"  ✗ 토큰 요청 예외: {type(e).__name__} {e}", file=sys.stderr)
+        print(f"  ✗ 토큰 요청 예외: {type(e).__name__} {scrub(e)[:200]}", file=sys.stderr)
         _TOKEN = ""
         return None
 
@@ -486,7 +506,7 @@ def kiwoom_quote(codes, path, api_id, body_key, label, extra=None):
             r = requests.post(f"{base}{path}", headers=h, json=body, timeout=15)
             if r.status_code != 200:
                 if not shown:
-                    print(f"  ✗ {label} HTTP {r.status_code}: {r.text[:200]}", file=sys.stderr)
+                    print(f"  ✗ {label} HTTP {r.status_code}: {scrub(r.text)[:200]}", file=sys.stderr)
                     shown = True
                 continue
             j = r.json()
@@ -501,7 +521,7 @@ def kiwoom_quote(codes, path, api_id, body_key, label, extra=None):
                 shown = True
         except Exception as e:
             if not shown:
-                print(f"  ✗ {label} 예외: {type(e).__name__} {e}", file=sys.stderr)
+                print(f"  ✗ {label} 예외: {type(e).__name__} {scrub(e)[:200]}", file=sys.stderr)
                 shown = True
 
     if out:
@@ -557,7 +577,7 @@ def save_history(rows):
                 sb_get("pf_price_history",
                        owner_param({"select": "ticker,high,low,open", "d": f"eq.{d}"}))}
     except Exception as e:
-        print(f"이력 조회 실패(신규로 처리): {e}", file=sys.stderr)
+        print(f"이력 조회 실패(신규로 처리): {scrub(e)[:200]}", file=sys.stderr)
         prev = {}
 
     out = []
@@ -606,7 +626,7 @@ def collect(items, sources, currency, preset=None):
                     errs.append(f"{fn.__name__}: 값없음")
                     tally(fn.__name__, False)
                 except Exception as e:
-                    errs.append(f"{fn.__name__}: {type(e).__name__} {str(e)[:60]}")
+                    errs.append(f"{fn.__name__}: {type(e).__name__} {scrub(e)[:60]}")
                     tally(fn.__name__, False)
         if got:
             rows.append({"ticker": code, "name": name, "price": got["price"],
@@ -629,7 +649,7 @@ def main():
     try:
         KR, US = load_holdings()
     except Exception as e:
-        print(f"[치명] 보유 종목 로드 실패: {e}", file=sys.stderr)
+        print(f"[치명] 보유 종목 로드 실패: {scrub(e)[:300]}", file=sys.stderr)
         sys.exit(1)
     print(f"보유 종목 → 국내 {len(KR)}개, 해외 {len(US)}개\n")
 
@@ -652,7 +672,7 @@ def main():
             print(f"  ✗ {fn.__name__}: 값이 이상함 ({fx})")
             fx = None
         except Exception as e:
-            print(f"  ✗ {fn.__name__}: {type(e).__name__} {str(e)[:60]}")
+            print(f"  ✗ {fn.__name__}: {type(e).__name__} {scrub(e)[:60]}")
 
     if YAHOO_ERR:
         print("\n── 야후 실패 사유 (참고) ──")
