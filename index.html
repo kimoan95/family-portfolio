@@ -203,6 +203,12 @@ let sb = null;
 if (CLOUD) { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY); }
 
 const TICKERS = ['MES','MNQ','MYM','MCL','MGC','CUSTOM'];
+/* 청산 사유 — exits 배열 안에 reason 으로 저장한다.
+   trades 테이블 스키마를 건드리지 않아도 되고(exits 가 jsonb), 부분청산마다 사유가 다를 수 있다.
+   ⚠️ 트레일링스탑과 손절가도달은 반드시 구분한다. 손절을 올려두고 걸린 것은
+      이익 거래인데, 손절가도달로 넣으면 성과 분석에서 손실처럼 읽힌다. */
+const EXIT_REASONS = ['목표가도달','트레일링스탑','손절가도달','감정적조기청산','추가판단후연장','기타'];
+
 const MULT = { MES:5, MNQ:2, MYM:0.5, MCL:100, MGC:10 };  // $/1.0 가격이동 (MCL: 원유 $1 이동=$100 / MGC: 금 $1 이동=$10)
 const WEEKDAYS = ['월','화','수','목','금','토','일'];
 const STORE_KEY = 'tj_trades_v1';
@@ -792,7 +798,7 @@ function renderOpenCard(t){
       <button class="btn-exit" onclick="openExit('${t.id}')">청산 기록</button>
     </div>
     ${exits.length? exits.map((e,i)=>`<div class="exit-row">
-        <span>청산 ${i+1} · ${esc(e.price)} × ${esc(e.qty)}계약${e.time?` · ${esc(e.time)}`:''}</span>
+        <span>청산 ${i+1} · ${esc(e.price)} × ${esc(e.qty)}계약${e.time?` · ${esc(e.time)}`:''}${e.reason?` · ${esc(e.reason)}`:''}</span>
         <span><span class="muted" style="cursor:pointer;" onclick="removeExit('${t.id}',${i})">삭제</span></span>
       </div>`).join('') : ''}
     ${c? `<div class="exit-row"><span>부분 실현 손익</span>
@@ -801,6 +807,32 @@ function renderOpenCard(t){
 }
 
 /* ---------- 청산 입력 모달 ---------- */
+
+/* 미리보기 HTML 만 따로 만든다.
+   입력할 때마다 render() 로 화면 전체를 다시 그리면 input 요소가
+   새로 만들어져서 커서(포커스)가 날아간다. 그래서 미리보기 영역만 갱신한다. */
+function exitPreviewHTML(){
+  const t = state.trades.find(x=>x.id===state.exitFor);
+  if(!t) return '';
+  const f = state.exitForm;
+  const mult = t.ticker==='CUSTOM' ? (parseFloat(t.customMultiplier)||0) : MULT[t.ticker];
+  const price = parseFloat(f.price);
+  const q = Math.max(0, parseInt(f.qty,10)||0);
+  const sign = t.direction==='long'?1:-1;
+  if(isNaN(price) || !(q>0) || !mult)
+    return '<span class="muted small">청산가와 수량을 입력하면 계산해드려요.</span>';
+  const g = (price-parseFloat(t.entry))*sign*mult*q;
+  const n = g - COMMISSION_PER_CONTRACT*q;
+  return `<span class="muted small">이번 청산 손익</span>
+      <span class="serif" style="font-weight:800;"><span class="${n>=0?'profit':'loss'}">${fmt(n)}</span></span>`;
+}
+
+function updateExitPreview(){
+  const el = document.getElementById('exit-preview');
+  if(el) el.innerHTML = exitPreviewHTML();
+}
+
+
 function renderExitModal(){
   const t = state.trades.find(x=>x.id===state.exitFor);
   if(!t) return '';
@@ -813,13 +845,7 @@ function renderExitModal(){
   const price = parseFloat(f.price);
   const q = Math.max(0, parseInt(f.qty,10)||0);
   const sign = t.direction==='long'?1:-1;
-  let preview = '<span class="muted small">청산가와 수량을 입력하면 계산해드려요.</span>';
-  if(!isNaN(price) && q>0 && mult){
-    const g=(price-parseFloat(t.entry))*sign*mult*q;
-    const n=g-COMMISSION_PER_CONTRACT*q;
-    preview = `<span class="muted small">이번 청산 손익</span>
-      <span class="serif" style="font-weight:800;"><span class="${n>=0?'profit':'loss'}">${fmt(n)}</span></span>`;
-  }
+  const preview = exitPreviewHTML();
   return `<div class="modal-overlay" onclick="if(event.target===this) closeExit()">
     <div class="modal">
       <div class="modal-head">
@@ -833,21 +859,31 @@ function renderExitModal(){
       <div class="two-col">
         <div class="field">
           <label>청산가</label>
-          <input type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.price)}" oninput="state.exitForm.price=this.value; render();" />
+          <input type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.price)}" oninput="state.exitForm.price=this.value; updateExitPreview();" />
         </div>
         <div class="field">
           <label>청산 계약 수 (최대 ${openQty})</label>
-          <select onchange="state.exitForm.qty=this.value; render();">
+          <select onchange="state.exitForm.qty=this.value; updateExitPreview();">
             ${Array.from({length:openQty},(_,i)=>i+1).map(n=>
               `<option value="${n}" ${String(f.qty)===String(n)?'selected':''}>${n}계약${n===openQty?' (전량)':''}</option>`).join('')}
           </select>
         </div>
       </div>
-      <div class="field">
-        <label>청산 시간 (선택)</label>
-        <input type="time" value="${esc(f.time)}" oninput="state.exitForm.time=this.value" />
+      <div class="two-col">
+        <div class="field">
+          <label>청산 시간 (선택)</label>
+          <input type="time" value="${esc(f.time)}" oninput="state.exitForm.time=this.value" />
+        </div>
+        <div class="field">
+          <label>청산 사유</label>
+          <select onchange="state.exitForm.reason=this.value;">
+            <option value="">선택 안 함</option>
+            ${EXIT_REASONS.map(r=>`<option value="${r}" ${f.reason===r?'selected':''}>${r}</option>`).join('')}
+          </select>
+        </div>
       </div>
-      <div class="preview-box">${preview}</div>
+      <p class="muted small" style="margin:-4px 0 10px;">손절을 올려두고 그 선에 걸려 나왔다면 «트레일링스탑» 입니다. «손절가도달»로 넣으면 이익 거래가 손실처럼 집계됩니다.</p>
+      <div class="preview-box" id="exit-preview">${preview}</div>
       <div class="modal-btns">
         <button class="btn-cancel" onclick="closeExit()">취소</button>
         <button class="btn-save" onclick="submitExit()">청산 저장</button>
@@ -1384,10 +1420,10 @@ function openExit(id){
   const closed = exitsOf(t).reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
   const openQty = qty - closed;
   state.exitFor = id;
-  state.exitForm = { price:'', qty:String(openQty), time:nowHM() };  // 기본 전량
+  state.exitForm = { price:'', qty:String(openQty), time:nowHM(), reason:'' };  // 기본 전량
   render();
 }
-function closeExit(){ state.exitFor=null; state.exitForm={price:'',qty:'',time:''}; render(); }
+function closeExit(){ state.exitFor=null; state.exitForm={price:'',qty:'',time:'',reason:''}; render(); }
 function nowHM(){ const d=new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 function submitExit(){
   const t = state.trades.find(x=>x.id===state.exitFor); if(!t) return;
@@ -1400,7 +1436,7 @@ function submitExit(){
   if(q > qty-closed){ showToast('보유 수량보다 많아요'); return; }
 
   const exits = exitsOf(t).slice();
-  exits.push({ price:String(price), qty:String(q), time:f.time||'' });
+  exits.push({ price:String(price), qty:String(q), time:f.time||'', reason:f.reason||'' });
   const updated = { ...t, exits };
   // 전량 청산되면 대표 청산가(평균)를 exit 필드에도 반영 (구버전 호환·표시용)
   const totalClosed = exits.reduce((s,e)=>s+(parseInt(e.qty,10)||0),0);
@@ -1410,7 +1446,7 @@ function submitExit(){
   }
   state.trades = state.trades.map(x=>x.id===t.id?updated:x);
   saveCache();
-  state.exitFor=null; state.exitForm={price:'',qty:'',time:''};
+  state.exitFor=null; state.exitForm={price:'',qty:'',time:'',reason:''};
   render();
   remoteUpsert(updated);
   showToast(totalClosed>=qty ? '전량 청산 완료' : `부분 청산 기록 (잔여 ${qty-totalClosed}계약)`);
