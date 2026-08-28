@@ -175,6 +175,12 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
   <div id="v-settings" style="display:none">
     <div class="card"><h2>원금 설정</h2><div id="prIn"></div></div>
     <div class="card"><h2>운용 규칙</h2><div id="rlIn"></div></div>
+    <div class="card"><h2>선물 계좌</h2>
+      <p class="note" style="margin-bottom:10px">선물 매매일지에 입력한 <b>실현손익이 이 계좌 잔액에 자동으로 더해집니다.</b><br>
+      기준 잔액을 넣은 시점 이후로 늘어난 손익만 반영하므로, 과거 거래를 고쳐도 금액이 어긋나지 않습니다.<br>
+      성과·R 탭은 현물만 계산합니다 — 선물은 섞이지 않습니다.</p>
+      <div id="futIn"></div>
+    </div>
     <div class="card"><h2>백업</h2>
       <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="gh" id="btnCsv">거래내역 CSV</button><button class="gh" id="btnLogout">로그아웃</button></div>
     </div>
@@ -186,11 +192,12 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 <script src="config.js"></script>
 <script>
 /* 화면 상단에 표시됩니다. 배포된 버전이 최신인지 확인하는 용도입니다. */
-const APP_VERSION = 'v3 (섹터입력)';
+const APP_VERSION = 'v7';
 
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 let D = {persons:[],accounts:[],baselines:[],trades:[],tickers:[],prices:[],hist:[],settings:{}};
 let view='dash', person='all', pane='overview', cAlloc, cSector, cEquity;
+let refreshing = false, refreshMsgText = '';   // 시세 갱신 버튼 상태
 
 const won=n=>n==null?'-':Math.round(n).toLocaleString()+'원';
 const usd=n=>n==null?'-':'$'+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -202,7 +209,7 @@ const $=id=>document.getElementById(id);
 
 /* ── 데이터 로드 ── */
 async function loadAll(){
-  const [p,a,b,t,tk,pc,st,ph] = await Promise.all([
+  const [p,a,b,t,tk,pc,st,ph,ft] = await Promise.all([
     sb.from('pf_persons').select('*').order('sort_order'),
     sb.from('pf_accounts').select('*').order('sort_order'),
     sb.from('pf_baselines').select('*'),
@@ -210,14 +217,86 @@ async function loadAll(){
     sb.from('pf_tickers').select('*'),
     sb.from('pf_prices').select('*'),
     sb.from('pf_settings').select('*'),
-    sb.from('pf_price_history').select('*').order('d')
+    sb.from('pf_price_history').select('*').order('d'),
+    sb.from('trades').select('*')          // 선물 매매일지 (없거나 권한 없으면 무시)
   ]);
   const err=[p,a,b,t,tk,pc,st].find(x=>x.error);
   if(err){ alert('데이터 로드 실패: '+err.error.message); return false; }
   D.persons=p.data; D.accounts=a.data; D.baselines=b.data; D.trades=t.data;
   D.tickers=tk.data; D.prices=pc.data; D.hist=(ph&&!ph.error&&ph.data)?ph.data:[];
+  /* 선물 거래를 실제로 읽었는지 기록한다.
+     못 읽었는데 빈 배열로 계산하면 "손익이 0이 됐다"고 오해해서
+     잔액이 조용히 틀어진다. 그래서 성공 여부를 따로 남긴다. */
+  D.futLoaded = !!(ft && !ft.error && Array.isArray(ft.data));
+  D.futTrades = D.futLoaded ? ft.data : [];
+  if(ft && ft.error) console.warn('선물 거래 로드 실패:', ft.error.message);
   D.settings={}; st.data.forEach(s=>D.settings[s.key]=s.value);
+  await syncFuturesBase();
   return true;
+}
+
+/* ══════════════════════════════════════════════════════════
+   선물 계좌 — 선물 매매일지(trades)의 실현손익을 잔액에 반영
+   ────────────────────────────────────────────────────────
+   기준잔액을 입력한 시점의 누적손익(pnlBase)을 함께 저장해두고,
+   그 뒤로 늘어난 손익만 더한다. 이렇게 하면 기준 시점 이전 거래를
+   나중에 수정하거나, 그때 보유 중이던 포지션을 나중에 청산해도
+   금액이 어긋나지 않는다.
+
+       현재잔액 = 기준잔액 + (지금 누적손익 − 기준시점 누적손익)
+   ══════════════════════════════════════════════════════════ */
+const FUT_MULT = { MES:5, MNQ:2, MYM:0.5, MCL:100, MGC:10 };
+const FUT_COMMISSION = 2;          // 왕복 1계약당 $
+
+function futExits(t){
+  if(Array.isArray(t.exits) && t.exits.length) return t.exits;
+  if(t.exit!=='' && t.exit!=null && !isNaN(parseFloat(t.exit)))
+    return [{price:String(t.exit), qty:String(Math.max(1,parseInt(t.qty,10)||1))}];
+  return [];
+}
+function futNet(t){
+  const mult = t.ticker==='CUSTOM' ? (parseFloat(t.custom_multiplier)||0) : FUT_MULT[t.ticker];
+  const entry = parseFloat(t.entry);
+  if(!mult || isNaN(entry)) return 0;
+  const sign = t.direction==='long' ? 1 : -1;
+  let gross=0, closed=0;
+  futExits(t).forEach(e=>{
+    const p=parseFloat(e.price), q=Math.max(0,parseInt(e.qty,10)||0);
+    if(isNaN(p)||q<=0) return;
+    gross += (p-entry)*sign*mult*q;
+    closed += q;
+  });
+  return closed ? gross - FUT_COMMISSION*closed : 0;
+}
+const futPnlTotal = ()=> (D.futTrades||[]).reduce((s,t)=>s+futNet(t),0);
+
+const futCfg = ()=> D.settings.futures || null;
+
+/* 기준시점 손익이 아직 없으면 지금 값으로 한 번만 기록.
+   ⚠️ 거래를 못 읽은 상태에서 기록하면 기준이 0으로 굳어버리므로 건너뛴다. */
+async function syncFuturesBase(){
+  const c=futCfg();
+  if(!c || !c.enabled) return;
+  if(c.pnlBase!=null) return;
+  if(!D.futLoaded){ console.warn('선물 거래를 못 읽어 기준 손익 기록을 보류합니다.'); return; }
+  const v={...c, pnlBase: futPnlTotal()};
+  D.settings.futures=v;
+  await sb.from('pf_settings').upsert({key:'futures', value:v});
+}
+
+/* 선물 계좌 현황. 설정이 없으면 null → 대시보드에 아무것도 안 나옴.
+
+   거래를 못 읽었으면 손익을 0으로 보고 기준 잔액만 쓴다.
+   (빈 배열을 "손익 0"으로 계산하면 기준손익만큼 잔액이 깎여버림) */
+function futuresAccount(){
+  const c=futCfg();
+  if(!c || !c.enabled) return null;
+  const base=Number(c.balanceUSD)||0;
+  const ok=D.futLoaded && c.pnlBase!=null;
+  const since=ok ? futPnlTotal()-Number(c.pnlBase) : 0;
+  const usd=base+since;
+  return {personKey:c.person||'me', label:c.label||'선물 계좌',
+          usd, since, krw:usd*fx(), stale:!ok};
 }
 const fx      = ()=>Number(D.settings.fx_usd_krw)||1400;
 const rules   = ()=>D.settings.rules||{riskPerTrade:.02,maxConcurrent:4,maxOpenRisk:.08,maxSinglePct:.40,stopLossPct:.10,drawdownHalt:.15};
@@ -356,6 +435,23 @@ function agg(){
     pa.cash+=ck; pa.total+=sub;
     pa.accts.push({id:a.id,name:a.display_name,total:sub,rows,live:a.is_live,note:a.note,order:a.sort_order});
   });
+  /* 선물 계좌 — 총자산에만 더한다.
+     원가(cost)·섹터·보유종목에는 넣지 않는다. 선물은 원가 개념이 없고,
+     현물 매매의 섹터 비중이나 보유 수익률을 오염시키면 안 되기 때문. */
+  const fa=futuresAccount();
+  if(fa){
+    const pa=Object.values(P).find(x=>x.key===fa.personKey);
+    if(pa){
+      pa.futures=fa;
+      pa.total+=fa.krw;
+      pa.accts.push({id:'futures', name:fa.label, total:fa.krw, live:false,
+        note:`$${fa.usd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`
+             + (fa.stale ? ' · ⚠️ 선물 거래를 읽지 못해 기준 잔액만 표시' : ' · 선물 매매일지 연동'),
+        order:999,
+        rows:[{name:'선물 증거금', vl:fa.usd, vk:fa.krw, ccy:'USD', isCash:true}]});
+    }
+  }
+
   Object.values(P).forEach(p=>{
     p.principalReturn=p.principal?(p.total-p.principal)/p.principal:null;
     p.cumReturn=p.cost?(p.stock-p.cost)/p.cost:null;
@@ -451,8 +547,11 @@ function stopDistances(){
 /* ── 렌더 ── */
 function renderNav(){
   const it=[['dash','대시보드'],['trades','거래 입력'],['prices','시세'],['settings','설정']];
-  $('topnav').innerHTML=it.map(([k,l])=>`<button class="${view===k?'on':''}" data-v="${k}">${l}</button>`).join('');
-  $('topnav').querySelectorAll('button').forEach(b=>b.onclick=()=>{view=b.dataset.v;render();});
+  $('topnav').innerHTML=it.map(([k,l])=>`<button class="${view===k?'on':''}" data-v="${k}">${l}</button>`).join('')
+    + `<span class="note" id="refreshMsg" style="margin:0 8px 0 auto;align-self:center;font-size:11px">${esc(refreshMsgText)}</span>`
+    + `<button id="btnRefreshPrices" class="gh" title="지금 시세를 다시 가져옵니다"${refreshing?' disabled':''}>${refreshing?'갱신 중…':'↻ 시세 갱신'}</button>`;
+  $('topnav').querySelectorAll('button[data-v]').forEach(b=>b.onclick=()=>{view=b.dataset.v;render();});
+  $('btnRefreshPrices').onclick=refreshPrices;
   ['dash','trades','prices','settings'].forEach(k=>$('v-'+k).style.display=view===k?'':'none');
 }
 function renderTabs(){
@@ -785,6 +884,60 @@ function renderSettings(){
       <input type="number" step="any" value="${(R[k]*m).toFixed(m===1?0:1)}" data-rl="${k}" data-m="${m}" style="max-width:100px">
       <span class="note" style="margin:0">${u}</span></div>`).join('');
   $('rlIn').querySelectorAll('[data-rl]').forEach(i=>i.onchange=()=>setRule(i.dataset.rl,i.value,+i.dataset.m));
+  renderFutures();
+}
+
+function renderFutures(){
+  const c=futCfg()||{enabled:false,person:'me',label:'선물 계좌',balanceUSD:'',pnlBase:null};
+  const fa=futuresAccount();
+  const now=futPnlTotal();
+  $('futIn').innerHTML=`
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:9px">
+      <label style="margin:0;display:flex;align-items:center;gap:6px;font-size:12.5px">
+        <input type="checkbox" id="fut_on" ${c.enabled?'checked':''} style="width:auto;margin:0"> 대시보드에 표시
+      </label>
+    </div>
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
+      <span style="width:110px;font-size:12px">계좌 주인</span>
+      <select id="fut_person" style="max-width:130px">${D.persons.map(p=>
+        `<option value="${esc(p.key)}" ${c.person===p.key?'selected':''}>${esc(p.label)}</option>`).join('')}</select>
+    </div>
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
+      <span style="width:110px;font-size:12px">계좌 이름</span>
+      <input type="text" id="fut_label" value="${esc(c.label||'선물 계좌')}" style="max-width:190px">
+    </div>
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:7px">
+      <span style="width:110px;font-size:12px">기준 잔액</span>
+      <input type="number" step="any" id="fut_bal" value="${c.balanceUSD??''}" style="max-width:150px">
+      <span class="note" style="margin:0">USD</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:10px">
+      <span style="width:110px;font-size:12px">기준 누적손익</span>
+      <input type="number" step="any" id="fut_pnlbase" value="${c.pnlBase??''}" placeholder="자동" style="max-width:150px">
+      <span class="note" style="margin:0">USD · 비워두면 저장 시 현재값(${now.toFixed(2)})으로 자동 설정</span>
+    </div>
+    <button class="pri" id="fut_save">저장</button>
+    ${fa?`<div style="margin-top:12px;padding:10px;background:#fafaf8;border-radius:7px;border:.5px solid #f0efe9;font-size:12.5px">
+      현재 <b>$${fa.usd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b>
+      (${won(fa.krw)}) · 기준 이후 ${fa.since>=0?'+':''}$${fa.since.toFixed(2)}
+      <span class="note" style="margin:4px 0 0;display:block">선물 거래 ${(D.futTrades||[]).length}건 · 전체 누적손익 $${now.toFixed(2)}</span>
+    </div>`:''}`;
+  $('fut_save').onclick=saveFutures;
+}
+
+async function saveFutures(){
+  const bal=parseFloat($('fut_bal').value);
+  const on=$('fut_on').checked;
+  if(on && !(bal>=0)){alert('기준 잔액을 숫자로 넣어주세요.');return;}
+  const pb=$('fut_pnlbase').value.trim();
+  const v={enabled:on, person:$('fut_person').value,
+           label:$('fut_label').value.trim()||'선물 계좌',
+           balanceUSD:isNaN(bal)?0:bal,
+           pnlBase: pb===''? futPnlTotal() : parseFloat(pb)};
+  const {error}=await sb.from('pf_settings').upsert({key:'futures', value:v});
+  if(error){alert('저장 실패: '+error.message);return;}
+  D.settings.futures=v;
+  await loadAll(); render();
 }
 function render(){
   renderNav(); fillSecList();
@@ -846,6 +999,35 @@ async function delTrade(id){
   if(error){alert('삭제 실패: '+error.message);return;}
   await loadAll(); render();
 }
+/* ── 시세 즉시 갱신 ────────────────────────────────────────
+   Supabase Edge Function(refresh-prices)을 호출한다.
+   브라우저에서 네이버를 직접 부르면 CORS 에 막히므로 서버를 거친다.
+   함수가 배포돼 있지 않으면 안내만 하고 아무것도 망가뜨리지 않는다. */
+async function refreshPrices(){
+  if(refreshing) return;
+  const t0=Date.now();
+  refreshing=true; refreshMsgText='';
+  renderNav();                                  // 버튼을 "갱신 중…" 으로
+  try{
+    const {data,error}=await sb.functions.invoke('refresh-prices');
+    if(error) throw error;
+    if(data&&data.error) throw new Error(data.error);
+
+    const sec=((Date.now()-t0)/1000).toFixed(1);
+    refreshMsgText = (data&&data.failed&&data.failed.length)
+      ? `${data.updated}/${data.total}종목 갱신 · 실패: ${data.failed.join(', ')}`
+      : `${data?data.updated:0}종목 갱신 완료 (${sec}초)`;
+    refreshing=false;
+    await loadAll(); render();                  // 새 시세로 화면 전체 갱신
+  }catch(e){
+    const s=String(e&&e.message||e);
+    refreshMsgText = /not found|404|Failed to send|non-2xx/i.test(s)
+      ? '갱신 기능 미설정 (Edge Function 배포 필요)'
+      : '갱신 실패: '+s;
+    refreshing=false; renderNav();
+  }
+}
+
 /* 섹터 자동완성 목록 — 폼과 시세 탭이 공유 */
 function fillSecList(){
   const secs=[...new Set(D.tickers.map(x=>x.sector).filter(s=>s&&s!=='기타'))].sort();
