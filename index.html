@@ -105,6 +105,15 @@
   .coach-chips .chip.okay{background:rgba(63,185,107,.13);border-color:#2a5a3c;color:#8fd9a8;}
   .coach-more{margin:10px 0 0;padding:0 0 0 16px;position:relative;z-index:2;max-width:88%;}
   .coach-more li{font-size:12.5px;color:#98a1ae;line-height:1.5;margin-top:4px;}
+  .tag.out-익절{background:rgba(63,185,107,.15);border-color:#2a5a3c;color:#8fd9a8;}
+  .tag.out-손절{background:rgba(229,72,77,.14);border-color:#5a2a2d;color:#f0a0a3;}
+  .tag.out-본절{background:rgba(217,164,65,.14);border-color:#5a4a22;color:#e0c07a;}
+  .be-ask{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;
+          margin-top:10px;padding-top:10px;border-top:1px dashed var(--border);}
+  .be-btns{display:flex;gap:6px;}
+  .be-btn{background:rgba(255,255,255,.05);border:1px solid var(--border);color:#aab2bf;
+          border-radius:999px;padding:5px 11px;font-size:11.5px;font-weight:700;cursor:pointer;}
+  .be-btn.on{background:var(--accent);border-color:var(--accent);color:#171204;}
   .coach-deco{position:absolute;right:-6px;bottom:-8px;width:120px;height:120px;opacity:.2;pointer-events:none;z-index:1;}
   /* period sub-selector + group headers + export */
   .logbar{display:flex; align-items:center; gap:8px; margin:4px 0 12px;}
@@ -211,7 +220,12 @@ const TICKERS = ['MES','MNQ','MYM','MCL','MGC','CUSTOM'];
    trades 테이블 스키마를 건드리지 않아도 되고(exits 가 jsonb), 부분청산마다 사유가 다를 수 있다.
    ⚠️ 트레일링스탑과 손절가도달은 반드시 구분한다. 손절을 올려두고 걸린 것은
       이익 거래인데, 손절가도달로 넣으면 성과 분석에서 손실처럼 읽힌다. */
-const EXIT_REASONS = ['목표가도달','트레일링스탑','손절가도달','감정적조기청산','추가판단후연장','기타'];
+const EXIT_REASONS = ['목표가도달','트레일링스탑','본절스탑','손절가도달','감정적조기청산','추가판단후연장','기타'];
+/* 진입가 부근에서 끝난 거래 = 본절. |R| 이 이 값 이하면 승/패가 아니라 본절로 센다. */
+const BREAKEVEN_R = 0.25;
+/* 본절로 나간 뒤 원래 방향으로 갔는지 — 사후에 확인해야 알 수 있다.
+   기본값이 «모름»이어야 편향이 보인다. 기억나는 것만 적으면 표본이 한쪽으로 쏠린다. */
+const BE_RESULTS = { unknown:'모름', hit:'목표 도달', miss:'안 감' };
 
 const MULT = { MES:5, MNQ:2, MYM:0.5, MCL:100, MGC:10 };  // $/1.0 가격이동 (MCL: 원유 $1 이동=$100 / MGC: 금 $1 이동=$10)
 const WEEKDAYS = ['월','화','수','목','금','토','일'];
@@ -344,7 +358,7 @@ let state = {
 };
 
 function emptyForm(){
-  return { date: todayISO(), ticker:'MES', customTicker:'', customMultiplier:'', direction:'long', qty:'1', entry:'', exit:'', stop:'', entryTime:'', exitTime:'', exitReason:'', setup:'', bias:'', exits:[] };
+  return { date: todayISO(), ticker:'MES', customTicker:'', customMultiplier:'', direction:'long', qty:'1', entry:'', exit:'', stop:'', entryTime:'', exitTime:'', exitReason:'', setup:'', bias:'', mfe:'', beResult:'', exits:[] };
 }
 function todayISO(){ return isoOf(new Date()); }   // toISOString() 은 새벽에 하루가 밀린다
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -399,7 +413,7 @@ function computeWeekly(){
 
   return { count, net, rSum, winRate, pf, avgR, bestTicker, bestR,
            wkStart, wkEnd, calced, withR, entered,
-           noStopCnt: count - withR.length };
+           noStopCnt: count - withR.length, ...splitOutcome(calced) };
 }
 
 /* ── 과정 점검 ─────────────────────────────────────────────
@@ -480,8 +494,9 @@ function weeklyCoaching(w){
   }
   const rTxt = (w.rSum>=0?'+':'') + w.rSum.toFixed(2) + 'R';
   // 승률은 청산된 전체, R은 손절가가 있는 거래만 → 분모가 다르다. 다르면 밝힌다.
-  const winTxt = w.winRate.toFixed(0) + '%'
-    + (w.noStopCnt>0 ? ` <span class="muted">(R 집계는 손절가 있는 ${w.withR.length}건 기준)</span>` : '');
+  // 본절을 승으로 세면 적중률이 부풀려진다 → 결판난 거래(익절+손절)만 분모로 쓴다.
+  const winTxt = `적중률 ${w.hitRate.toFixed(0)}%`
+    + ` <span class="muted">(결판 ${w.decided}건${w.bes.length?` · 본절 ${w.bes.length}건 제외`:''}${w.noStopCnt>0?` · R 집계는 손절가 있는 ${w.withR.length}건`:''})</span>`;
 
   const flags = weeklyFlags(w);
   let tone, title;
@@ -507,7 +522,7 @@ function weeklyCoaching(w){
       : (w.rSum>=0 ? '규칙을 어긴 거래가 없어요. 지금 기준을 유지하세요.'
                    : '규칙은 지켰는데 결과가 안 따라왔어요. 손절이 아니라 진입 자리를 점검할 때입니다.');
   }
-  const desc = `${rTxt}, 승률 ${winTxt}입니다. ${advice}`;
+  const desc = `${rTxt}, ${winTxt}입니다. ${advice}`;
   return { tone, title, desc, flags };
 }
 
@@ -565,9 +580,28 @@ function calcTrade(t){
   const rr = hasStop && risk>0 ? Math.abs(gross)/risk : null;
   const rMultiple = hasStop && risk>0 ? net/risk : null;
   const openQty = qty - closedQty;
+  /* 결과 3분류 — «본절»을 승으로 세면 적중률이 부풀려진다.
+     +$0.50 로 끝난 본절 거래도 net>0 이라 지금까진 «승»이었다.
+     손절가가 있으면 R 로, 없으면 «움직인 폭이 수수료보다 작았나»로 판정한다. */
+  const beByR   = rMultiple!=null && Math.abs(rMultiple) <= BREAKEVEN_R;
+  const beByFee = rMultiple==null && Math.abs(gross) <= COMMISSION_PER_CONTRACT*closedQty;
+  const outcome = (beByR || beByFee) ? '본절' : (net>0 ? '익절' : '손절');
   return { gross, net, risk, rr, rMultiple, commission, hasStop,
            qty, closedQty, openQty, avgExit, partial: openQty>0,
-           win: net>0 };
+           outcome, win: net>0 };
+}
+
+/* 결과별로 나눈 지표. 적중률은 본절을 분모에서도 뺀다 (결판난 거래만). */
+function splitOutcome(calced){
+  const hits   = calced.filter(t=>t.c.outcome==='익절');
+  const misses = calced.filter(t=>t.c.outcome==='손절');
+  const bes    = calced.filter(t=>t.c.outcome==='본절');
+  const decided = hits.length + misses.length;
+  const avgR = a => { const w=a.filter(t=>t.c.rMultiple!=null);
+                      return w.length ? w.reduce((s,t)=>s+t.c.rMultiple,0)/w.length : null; };
+  return { hits, misses, bes, decided,
+           hitRate: decided ? hits.length/decided*100 : 0,
+           avgHitR: avgR(hits), avgMissR: avgR(misses), avgBeR: avgR(bes) };
 }
 /* 주의: toISOString() 은 UTC 로 바꾼다. 한국(UTC+9)에서 오전 9시 이전에 쓰면
    날짜가 하루 밀린다 — 아시아 세션을 새벽에 기록하면 주 범위가 통째로 어긋난다.
@@ -594,6 +628,8 @@ function toRow(t){
     stop: (t.stop===null||t.stop===undefined) ? '' : String(t.stop),
     entry_time: t.entryTime || '', setup: t.setup || '',
     bias: (t.bias===''||t.bias==null) ? null : parseInt(t.bias,10),
+    mfe: (t.mfe===''||t.mfe==null) ? null : parseFloat(t.mfe),
+    be_result: t.beResult || '',
     exits: exitsOf(t)
   };
 }
@@ -605,6 +641,8 @@ function fromRow(r){
     entry: r.entry, exit: r.exit, stop: r.stop==null?'':r.stop,
     entryTime: r.entry_time || '', setup: r.setup || '',
     bias: (r.bias===null||r.bias===undefined) ? '' : String(r.bias),
+    mfe: (r.mfe===null||r.mfe===undefined) ? '' : String(r.mfe),
+    beResult: r.be_result || '',
     exits: Array.isArray(r.exits) ? r.exits : []
   };
 }
@@ -653,7 +691,9 @@ function computeStats(){
   const [wkStart,wkEnd] = getWeekRange(new Date());
   const weekTrades = calced.filter(t=>t.date>=wkStart && t.date<=wkEnd);
   const weekNet = weekTrades.reduce((s,t)=>s+t.c.net,0);
-  return { total, totalNet, totalR, winRate, pf, avgR, weekNet, weekCount: weekTrades.length, noStopCount, rCount: withR.length };
+  const sp = splitOutcome(calced);
+  return { total, totalNet, totalR, winRate, pf, avgR, weekNet, weekCount: weekTrades.length,
+           noStopCount, rCount: withR.length, calced, ...sp };
 }
 
 /* ---------- 바이어스 점수 엔진 ---------- */
@@ -730,7 +770,7 @@ function statsOf(list){
   const pf = grossLoss>0 ? grossWin/grossLoss : (grossWin>0 ? Infinity : 0);
   const avgR = count ? rSum/count : 0;
   const avgNet = count ? net/count : 0;
-  return { count, net, rSum, winRate, pf, avgR, avgNet };
+  return { count, net, rSum, winRate, pf, avgR, avgNet, ...splitOutcome(calced) };
 }
 // 통계 탭에서 보는 "현재 기간"의 날짜 범위
 function currentPeriodRange(period){
@@ -848,9 +888,9 @@ function renderCoaching(){
       ${co.flags.length>3?`<li class="muted">그 외 ${co.flags.length-3}가지</li>`:''}
     </ul>` : ''}
     <div class="coach-chips">
-      <span class="chip">WIN ${w.winRate.toFixed(0)}%</span>
+      <span class="chip">적중 ${w.hitRate.toFixed(0)}%</span>
       <span class="chip">PF ${w.pf===Infinity?'∞':w.pf.toFixed(2)}</span>
-      <span class="chip">AVG ${w.avgR>=0?'+':''}${w.avgR.toFixed(2)}R</span>
+      <span class="chip">익절 ${w.avgHitR!=null?`+${w.avgHitR.toFixed(2)}R`:'-'} / 손절 ${w.avgMissR!=null?w.avgMissR.toFixed(2)+'R':'-'}</span>
       ${(co.flags && co.flags.length) ? `<span class="chip warn">점검 ${co.flags.length}</span>`
                                       : `<span class="chip okay">규칙 이상 없음</span>`}
     </div>
@@ -1027,6 +1067,9 @@ function renderTradeCard(t){
     const bv=parseInt(t.bias,10);
     if(!isNaN(bv)) meta.push(`<span class="tag">바이어스 ${bv>0?'+':''}${bv} · ${zoneOf(bv).label}</span>`);
   }
+  meta.unshift(`<span class="tag out-${c.outcome}">${c.outcome}</span>`);
+  const _mr = mfeR(t);
+  if(_mr!=null) meta.push(`<span class="tag">MFE +${_mr.toFixed(2)}R</span>`);
   return `<div class="card">
     <div class="trade-top">
       <div class="trade-left"><span class="ticker-name">${label}</span>
@@ -1047,7 +1090,26 @@ function renderTradeCard(t){
         <p class="muted small" style="margin:2px 0 0;">${c.rMultiple!=null?`RR 1:${c.rr.toFixed(2)} · ${c.rMultiple>=0?'+':''}${c.rMultiple.toFixed(2)}R`:`<span style="color:var(--accent);">R 없음 (손절가 미입력)</span>`}</p>
       </div>
     </div>
+    ${c.outcome==='본절' ? renderBeAsk(t) : ''}
   </div>`;
+}
+
+/* 본절로 나간 거래에만 묻는다 — «그 뒤 원래 목표까지 갔나».
+   본절 이동이 이른지 진입이 늦은지를 가르는 유일한 단서인데,
+   거래 중에는 알 수 없고 나중에 차트를 봐야만 답할 수 있다. */
+function renderBeAsk(t){
+  const cur = t.beResult || 'unknown';
+  const btn = (k)=>`<button class="be-btn ${cur===k?'on':''}" onclick="setBeResult('${t.id}','${k}')">${BE_RESULTS[k]}</button>`;
+  return `<div class="be-ask">
+    <span class="muted small">본절 후 원래 목표까지 갔나요?</span>
+    <div class="be-btns">${btn('hit')}${btn('miss')}${btn('unknown')}</div>
+  </div>`;
+}
+function setBeResult(id, v){
+  const t = state.trades.find(x=>x.id===id); if(!t) return;
+  const updated = { ...t, beResult: (t.beResult===v ? '' : v) };
+  state.trades = state.trades.map(x=>x.id===id?updated:x);
+  saveCache(); render(); remoteUpsert(updated);
 }
 
 function renderLog(){
@@ -1058,7 +1120,7 @@ function renderLog(){
       <p class="muted small" style="margin:4px 0 0;">전체 ${s.total}건</p></div>
     <div class="card"><p class="stat-label">누적 실현 R</p>
       <p class="stat-value serif ${s.totalR>=0?'profit':'loss'}">${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R</p>
-      <p class="muted small" style="margin:4px 0 0;">승률 ${s.winRate.toFixed(0)}%</p></div>
+      <p class="muted small" style="margin:4px 0 0;">적중률 ${s.hitRate.toFixed(0)}% · 본절 ${s.bes.length}건</p></div>
   </div>`;
 
   // 보유 중 포지션 섹션
@@ -1307,9 +1369,9 @@ function renderStats(){
     <div class="card"><p class="stat-label">${periodTitle(p)} 실현 R</p>
       <p class="stat-value serif ${cur.rSum>=0?'profit':'loss'}">${cur.rSum>=0?'+':''}${cur.rSum.toFixed(2)}R</p>
       <p class="muted small" style="margin:4px 0 0;">평균 ${cur.avgR>=0?'+':''}${cur.avgR.toFixed(2)}R</p></div>
-    <div class="card"><p class="stat-label">승률</p>
-      <p class="stat-value serif">${cur.winRate.toFixed(0)}%</p>
-      <p class="muted small" style="margin:4px 0 0;">Profit Factor ${cur.pf===Infinity?'∞':cur.pf.toFixed(2)}</p></div>
+    <div class="card"><p class="stat-label">적중률 <span class="muted" style="font-weight:400;">(본절 제외)</span></p>
+      <p class="stat-value serif">${cur.hitRate.toFixed(0)}%</p>
+      <p class="muted small" style="margin:4px 0 0;">결판 ${cur.decided}건 · PF ${cur.pf===Infinity?'∞':cur.pf.toFixed(2)}</p></div>
     <div class="card"><p class="stat-label">거래당 평균 손익</p>
       <p class="stat-value serif ${cur.avgNet>=0?'profit':'loss'}">${cur.count?fmt(cur.avgNet):'-'}</p></div>
   </div>`;
@@ -1411,6 +1473,85 @@ function renderStats(){
       </table>
       <p class="fac-hint" style="margin-top:8px;">시간 기록된 거래 ${withSess.length}건${noTimeCnt?` · 시간이 비어 분류 못 한 거래 ${noTimeCnt}건`:''} · 표본 20건 이상부터 신뢰할 만합니다.</p>
     </div>`;
+  }
+
+  /* ── 결과 3분류 ────────────────────────────────────────────
+     «본절»을 승으로 세면 적중률이 부풀려진다. 진입가 부근(|R|≤0.25)에서
+     끝난 거래를 따로 떼면 «적중률은 낮지만 페이오프가 큰» 구조가 드러난다.
+     입력이 필요 없다 — 진입가·청산가·손절가만 있으면 자동으로 갈린다. */
+  {
+    const sp = splitOutcome(state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c));
+    if(sp.decided + sp.bes.length > 0){
+      const row = (name, arr, avg, cls) => `<tr style="border-top:1px solid var(--border);text-align:right;">
+        <td style="text-align:left;padding:8px 0;"><span class="tag out-${name}">${name}</span></td>
+        <td>${arr.length}</td>
+        <td class="${cls}" style="font-weight:700;">${avg!=null?`${avg>=0?'+':''}${avg.toFixed(2)}R`:'-'}</td>
+        <td>${arr.reduce((s,t)=>s+t.c.net,0)>=0?'+':''}$${Math.abs(arr.reduce((s,t)=>s+t.c.net,0)).toFixed(0)}</td>
+      </tr>`;
+      // 손절이 −1R 로 고정될 때의 성과 — 적중률이 낮을수록 이 차이가 커진다
+      const ideal = (sp.avgHitR!=null && sp.avgMissR!=null)
+        ? sp.hits.length*sp.avgHitR - sp.misses.length*1.0 + (sp.avgBeR||0)*sp.bes.length : null;
+      const actual = (sp.avgHitR!=null && sp.avgMissR!=null)
+        ? sp.hits.length*sp.avgHitR + sp.misses.length*sp.avgMissR + (sp.avgBeR||0)*sp.bes.length : null;
+      html += `<div class="fac-card" style="margin-top:16px;">
+        <h3 style="margin:0 0 4px;">결과 3분류</h3>
+        <p class="fac-hint" style="margin:0 0 10px;">진입가 부근(|R| ≤ ${BREAKEVEN_R})에서 끝난 거래는 승도 패도 아닌 «본절»로 셉니다. 자동 판정이라 과거 거래에도 적용돼요.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <tr style="text-align:right;color:var(--muted);">
+            <th style="text-align:left;font-weight:600;">구분</th><th style="font-weight:600;">건수</th>
+            <th style="font-weight:600;">평균 R</th><th style="font-weight:600;">순손익</th>
+          </tr>
+          ${row('익절', sp.hits, sp.avgHitR, 'profit')}
+          ${row('손절', sp.misses, sp.avgMissR, 'loss')}
+          ${row('본절', sp.bes, sp.avgBeR, '')}
+        </table>
+        <p class="fac-hint" style="margin-top:8px;">결판난 ${sp.decided}건 중 익절 ${sp.hits.length}건 → <b>적중률 ${sp.hitRate.toFixed(0)}%</b>${
+          sp.avgHitR!=null&&sp.hitRate<50 ? ` · 적중률이 낮고 페이오프가 큰 구조입니다. 이런 시스템은 손절이 −1R로 고정돼야만 성립해요.` : ''}</p>
+        ${(ideal!=null && sp.misses.length>=3 && Math.abs(sp.avgMissR+1) > 0.03) ? `<p class="fac-hint" style="margin-top:6px;">
+          손절 평균이 <b>${sp.avgMissR.toFixed(2)}R</b>입니다. −1.00R로 지켰다면 누적 ${ideal>=0?'+':''}${ideal.toFixed(2)}R,
+          지금은 ${actual>=0?'+':''}${actual.toFixed(2)}R — <b class="loss">${(ideal-actual).toFixed(2)}R</b>이 손절 이탈로 새고 있어요.</p>` : ''}
+      </div>`;
+    }
+  }
+
+  /* ── MFE · 본절 후 결과 ────────────────────────────────────
+     "얼마나 갈 수 있었나" 대비 "얼마를 챙겼나". 본절 스탑이 이른지
+     진입이 늦은지를 가르는 유일한 단서다. */
+  {
+    const all = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
+    const withMfe = all.map(t=>({t, r:mfeR(t)})).filter(x=>x.r!=null && x.t.c.rMultiple!=null);
+    const bes = all.filter(t=>t.c.outcome==='본절');
+    const beHit  = bes.filter(t=>t.beResult==='hit').length;
+    const beMiss = bes.filter(t=>t.beResult==='miss').length;
+    const beUnk  = bes.length - beHit - beMiss;
+
+    html += `<div class="fac-card" style="margin-top:16px;">
+      <h3 style="margin:0 0 4px;">최대유리폭 · 본절 검증</h3>`;
+    if(withMfe.length === 0){
+      html += `<p class="fac-hint" style="margin:0 0 10px;">거래를 기록할 때 <b>MFE(최대유리폭)</b>를 넣으면 «갈 수 있었던 폭 대비 얼마를 챙겼나»가 여기 쌓입니다. 손절폭으로 나눠 R로 환산하니 종목이 달라도 비교돼요.</p>`;
+    } else {
+      const cap = withMfe.reduce((s,x)=>s+x.t.c.rMultiple,0) / withMfe.reduce((s,x)=>s+x.r,0) * 100;
+      const avgMfe = withMfe.reduce((s,x)=>s+x.r,0)/withMfe.length;
+      const beReach = withMfe.filter(x=>x.r>=0.5).length;
+      const beWent2 = withMfe.filter(x=>x.r>=0.5 && x.r>=2).length;
+      html += `<p class="fac-hint" style="margin:0 0 10px;">기록된 ${withMfe.length}건 기준. 평균 최대 <b>+${avgMfe.toFixed(2)}R</b>까지 갔고 그중 <b>${cap.toFixed(0)}%</b>를 챙겼습니다.</p>
+      <p class="fac-hint" style="margin:0 0 10px;">+0.5R 이상 간 ${beReach}건 중 ${beWent2}건(${beReach?Math.round(beWent2/beReach*100):0}%)이 +2R까지 갔어요.
+      ${beReach>=8 ? (beWent2/beReach>=0.5 ? '절반 이상이 크게 갑니다 — 본절 이동을 +0.5R에서 하면 러너를 잘라내는 셈이에요.'
+                                          : '대부분 크게 못 갑니다 — 본절 이동이 이르다고 보기 어렵습니다.') : '표본 8건부터 판단할 만해요.'}</p>`;
+    }
+    if(bes.length){
+      const denom = beHit + beMiss;
+      html += `<div style="border-top:1px solid var(--border);padding-top:10px;margin-top:6px;">
+        <p class="fac-hint" style="margin:0 0 6px;"><b>본절 ${bes.length}건</b> 중 그 뒤 원래 목표까지 간 것: ${
+          denom ? `<b>${beHit}건 / ${denom}건 (${Math.round(beHit/denom*100)}%)</b>` : '아직 없음'}${
+          beUnk ? ` · <span style="color:var(--accent);">미확인 ${beUnk}건</span>` : ''}</p>
+        ${beUnk ? `<p class="fac-hint" style="margin:0;">거래 카드에서 «본절 후 원래 목표까지 갔나요?»를 눌러 채워주세요. 기억나는 것만 채우면 표본이 한쪽으로 쏠려 결론이 뒤집힙니다.</p>`
+                : denom>=6 ? `<p class="fac-hint" style="margin:0;">${beHit/denom>=0.5
+                    ? '절반 넘게 목표까지 갔습니다 — 본절 이동이 이르거나 진입이 늦습니다.'
+                    : '대부분 목표까지 못 갔습니다 — 본절 스탑이 제 역할을 하고 있어요.'}</p>` : ''}
+      </div>`;
+    }
+    html += `</div>`;
   }
 
   /* ── 보유 시간 (승/패 분리) ────────────────────────────────
@@ -1544,6 +1685,11 @@ function renderModal(){
         </div>
       </div>
       <div class="field">
+        <label>최대유리폭 MFE (선택 · 포인트)</label>
+        <input type="text" inputmode="decimal" placeholder="내 방향으로 최대 몇 포인트 갔나" value="${esc(f.mfe)}" oninput="state.form.mfe=this.value; updateMfeHint();" />
+        <p class="fac-hint" id="mfe-hint" style="margin-top:5px;">${mfeHintText(f)}</p>
+      </div>
+      <div class="field">
         <label>진입 시 바이어스 점수 (선택 · −75~+75)</label>
         <input type="text" inputmode="numeric" placeholder="예: -17" value="${esc(f.bias)}" oninput="state.form.bias=this.value" />
         <p class="fac-hint" style="margin-top:5px;">${biasHintForForm()}</p>
@@ -1621,6 +1767,28 @@ function holdHintText(f){
 function updateHoldHint(){
   const el = document.getElementById('hold-hint');
   if(el) el.textContent = holdHintText(state.form);
+}
+
+/* MFE 를 R 로 환산 — «몇 포인트»는 종목마다 뜻이 달라 비교가 안 된다.
+   손절폭으로 나눠야 «최대 몇 R 까지 갔나»가 되고 그제야 종목 간 비교가 된다. */
+function mfeR(t){
+  const v = parseFloat(t.mfe);
+  const entry = parseFloat(t.entry), stop = parseFloat(t.stop);
+  if(isNaN(v) || v<=0 || isNaN(entry) || isNaN(stop)) return null;
+  const d = Math.abs(entry-stop);
+  return d>0 ? v/d : null;
+}
+function mfeHintText(f){
+  const r = mfeR(f);
+  if(r==null) return '청산 전까지 내 방향으로 최대 몇 포인트 갔는지. 손절폭으로 나눠 R로 환산합니다.';
+  const c = calcTrade(f);
+  const got = c && c.rMultiple!=null ? c.rMultiple : null;
+  const keep = (got!=null && r>0) ? ` · 그중 ${(got/r*100).toFixed(0)}%를 챙겼어요` : '';
+  return `최대 +${r.toFixed(2)}R 까지 갔습니다${keep}`;
+}
+function updateMfeHint(){
+  const el = document.getElementById('mfe-hint');
+  if(el) el.textContent = mfeHintText(state.form);
 }
 
 function updatePreview(){
@@ -1851,9 +2019,9 @@ function buildAnalysisText(list){
   const s=computeStats();
   const rows=list.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
   const head=`# 매매일지 (내보낸 시각: ${new Date().toLocaleString('ko-KR')})\n`+
-    `요약: 총 ${s.total}건 · 누적 순손익 ${fmt(s.totalNet)} · 누적 R ${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R · 승률 ${s.winRate.toFixed(0)}% · PF ${s.pf===Infinity?'∞':s.pf.toFixed(2)}\n\n`;
-  const cols=`| 날짜 | 진입시간 | 세션 | 청산시간 | 보유(분) | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | 청산사유 | 셋업 | 바이어스 |\n`+
-    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
+    `요약: 총 ${s.total}건 · 누적 순손익 ${fmt(s.totalNet)} · 누적 R ${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R · 적중률 ${s.hitRate.toFixed(0)}%(결판 ${s.decided}건, 본절 ${s.bes.length}건 제외) · PF ${s.pf===Infinity?'∞':s.pf.toFixed(2)}\n\n`;
+  const cols=`| 날짜 | 진입시간 | 세션 | 청산시간 | 보유(분) | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | MFE(R) | 본절후 | 청산사유 | 셋업 | 바이어스 |\n`+
+    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
   const body=rows.map(t=>{
     const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
     const dir=t.direction==='long'?'롱':'숏';
@@ -1862,7 +2030,7 @@ function buildAnalysisText(list){
     const rrTxt = t.c.rr!=null ? `1:${t.c.rr.toFixed(2)}` : '-';
     const rTxt  = t.c.rMultiple!=null ? `${t.c.rMultiple>=0?'+':''}${t.c.rMultiple.toFixed(2)}` : '-';
     const xt = exitTimeOf(t), hm = tradeHoldMinutes(t);
-    return `| ${t.date} | ${t.entryTime||'-'} | ${sessionOf(t.date,t.entryTime)||'-'} | ${xt||'-'} | ${hm==null?'-':hm} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.win?'승':'패'} | ${exitReasonOf(t)||'-'} | ${t.setup||'-'} | ${bTxt} |`;
+    return `| ${t.date} | ${t.entryTime||'-'} | ${sessionOf(t.date,t.entryTime)||'-'} | ${xt||'-'} | ${hm==null?'-':hm} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit||t.c.avgExit.toFixed(2)} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.outcome} | ${mfeR(t)!=null?'+'+mfeR(t).toFixed(2):'-'} | ${t.c.outcome==='본절'?(BE_RESULTS[t.beResult]||'모름'):'-'} | ${exitReasonOf(t)||'-'} | ${t.setup||'-'} | ${bTxt} |`;
   }).join('\n');
   return head+cols+body+'\n';
 }
@@ -1923,14 +2091,15 @@ function exportForAnalysis(){
 function downloadCSV(list){
   list = list || state.trades;
   const rows=list.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
-  const header=['날짜','진입시간','세션','청산시간','보유(분)','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','청산사유','셋업','바이어스'];
+  const header=['날짜','진입시간','세션','청산시간','보유(분)','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','MFE(R)','본절후','청산사유','셋업','바이어스'];
   const csv=[header.join(',')].concat(rows.map(t=>{
     const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
     const cell=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;
     const hm=tradeHoldMinutes(t);
     return [t.date,t.entryTime||'',sessionOf(t.date,t.entryTime)||'',exitTimeOf(t)||'',hm==null?'':hm,
-      label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit,t.stop||'',
-      t.c.net.toFixed(2),t.c.rr!=null?t.c.rr.toFixed(2):'',t.c.rMultiple!=null?t.c.rMultiple.toFixed(2):'',t.c.win?'승':'패',
+      label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit||t.c.avgExit.toFixed(2),t.stop||'',
+      t.c.net.toFixed(2),t.c.rr!=null?t.c.rr.toFixed(2):'',t.c.rMultiple!=null?t.c.rMultiple.toFixed(2):'',t.c.outcome,
+      mfeR(t)!=null?mfeR(t).toFixed(2):'', t.c.outcome==='본절'?(BE_RESULTS[t.beResult]||'모름'):'',
       exitReasonOf(t)||'',t.setup||'',
       (t.bias===''||t.bias==null)?'':t.bias].map(cell).join(',');
   })).join('\n');
@@ -1957,6 +2126,7 @@ function openEditForm(id){
     direction:t.direction, qty:String(t.qty||'1'), entry:String(t.entry), exit:String(t.exit), stop: (t.stop===null||t.stop===undefined)?'':String(t.stop),
     entryTime:t.entryTime||'', exitTime:(single&&single.time)||'', exitReason:(single&&single.reason)||'',
     setup:t.setup||'', bias:(t.bias==null?'':String(t.bias)),
+    mfe:(t.mfe==null?'':String(t.mfe)), beResult:t.beResult||'',
     exits: Array.isArray(t.exits) ? t.exits.map(e=>({...e})) : [] };   // 부분 청산 기록 보존
   state.editingId=id; state.formOpen=true; render();
 }
