@@ -101,6 +101,10 @@
   .coach-desc{font-size:13.5px;color:#aab2bf;line-height:1.55;margin:8px 0 0;max-width:80%;}
   .coach-chips{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;position:relative;z-index:2;}
   .coach-chips .chip{background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:999px;padding:7px 13px;font-size:12px;color:#cdd3dc;font-weight:700;}
+  .coach-chips .chip.warn{background:rgba(229,72,77,.14);border-color:#5a2a2d;color:#f0a0a3;}
+  .coach-chips .chip.okay{background:rgba(63,185,107,.13);border-color:#2a5a3c;color:#8fd9a8;}
+  .coach-more{margin:10px 0 0;padding:0 0 0 16px;position:relative;z-index:2;max-width:88%;}
+  .coach-more li{font-size:12.5px;color:#98a1ae;line-height:1.5;margin-top:4px;}
   .coach-deco{position:absolute;right:-6px;bottom:-8px;width:120px;height:120px;opacity:.2;pointer-events:none;z-index:1;}
   /* period sub-selector + group headers + export */
   .logbar{display:flex; align-items:center; gap:8px; margin:4px 0 12px;}
@@ -323,6 +327,9 @@ let state = {
   tab: 'log',
   logGroup: 'day',     // day | week | month
   statPeriod: 'week',  // 통계 탭 기간: day | week | month
+  exportRange: 'all',   // 분석용 복사 범위: all | day | week | month | custom
+  exportFrom: '',       // custom 일 때 시작일 (비우면 제한 없음)
+  exportTo: '',         // custom 일 때 종료일
   biasTicker: 'MES',   // 바이어스 탭에서 보고 있는 종목
   bias: {},            // { MES:{h1:'',m15:'',pd:'',smt:'',session:'',vix:'',date:''}, ... }
   dayDetail: null,     // 캘린더에서 선택한 날짜(YYYY-MM-DD)
@@ -337,9 +344,9 @@ let state = {
 };
 
 function emptyForm(){
-  return { date: todayISO(), ticker:'MES', customTicker:'', customMultiplier:'', direction:'long', qty:'1', entry:'', exit:'', stop:'', entryTime:'', setup:'', bias:'', exits:[] };
+  return { date: todayISO(), ticker:'MES', customTicker:'', customMultiplier:'', direction:'long', qty:'1', entry:'', exit:'', stop:'', entryTime:'', exitTime:'', exitReason:'', setup:'', bias:'', exits:[] };
 }
-function todayISO(){ return new Date().toISOString().slice(0,10); }
+function todayISO(){ return isoOf(new Date()); }   // toISOString() 은 새벽에 하루가 밀린다
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function fmt(n){ return (n<0?'-':'+') + '$' + Math.abs(n).toFixed(2); }
 function esc(s){ return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -370,9 +377,99 @@ function computeWeekly(){
     const k = t.ticker==='CUSTOM' ? (t.customTicker||'커스텀') : t.ticker;
     byTicker[k] = (byTicker[k]||0) + t.c.rMultiple;
   });
-  let bestTicker=null, bestR=-Infinity;
-  Object.entries(byTicker).forEach(([k,v])=>{ if(v>bestR){ bestR=v; bestTicker=k; } });
-  return { count, net, rSum, winRate, pf, avgR, bestTicker, bestR, wkStart, wkEnd };
+  /* 최고 종목 — 합계 R 로 뽑으면 "많이 거래한 종목"이 이긴다. 평균 R 로 뽑고,
+     비교 대상이 2종목 이상이고 표본이 5건 이상일 때만 의미를 부여한다. */
+  const byTickerCnt = {};
+  withR.forEach(t=>{
+    const k = t.ticker==='CUSTOM' ? (t.customTicker||'커스텀') : t.ticker;
+    byTickerCnt[k] = (byTickerCnt[k]||0) + 1;
+  });
+  let bestTicker=null, bestR=null;
+  const names = Object.keys(byTicker);
+  if(names.length >= 2){
+    names.forEach(k=>{
+      if(byTickerCnt[k] < 5) return;                 // 표본 부족 → 후보에서 제외
+      const avg = byTicker[k]/byTickerCnt[k];
+      if(bestR===null || avg>bestR){ bestR=avg; bestTicker=k; }
+    });
+  }
+
+  // 이번 주에 진입한 거래 (청산 여부 무관) — 손절 없이 들어갔는지 등 "진입 규칙" 점검용
+  const entered = state.trades.filter(t=>t.date>=wkStart && t.date<=wkEnd);
+
+  return { count, net, rSum, winRate, pf, avgR, bestTicker, bestR,
+           wkStart, wkEnd, calced, withR, entered,
+           noStopCnt: count - withR.length };
+}
+
+/* ── 과정 점검 ─────────────────────────────────────────────
+   결과(R)를 칭찬하는 건 코칭이 아니다. 결과에는 운이 섞여 있어서
+   잘한 걸 칭찬해도 배울 게 없다. 손익과 무관하게 판정할 수 있는
+   "규칙을 지켰나"만 본다. sev 가 클수록 먼저 보여준다. */
+function weeklyFlags(w){
+  const flags = [];
+  const add = (sev, key, msg) => flags.push({ sev, key, msg });
+
+  // ① 손절 없이 진입 — R 자체를 계산할 수 없게 만든다. 가장 심각.
+  const noStop = w.entered.filter(t=>{
+    const e=parseFloat(t.entry), s=parseFloat(t.stop);
+    return isNaN(s) || isNaN(e) || Math.abs(e-s)===0;
+  });
+  if(noStop.length) add(100, 'nostop',
+    `손절 없이 들어간 거래가 ${noStop.length}건 있어요. 이 거래들은 R을 계산할 수 없어 성과 집계에서 빠집니다.`);
+
+  // ② 계획보다 크게 잃음 — 손절을 세워놓고 안 지켰다는 뜻.
+  //    슬리피지·갭을 감안해 −1.2R 부터 위반으로 본다.
+  const overLoss = w.withR.filter(t=>t.c.rMultiple < -1.2);
+  if(overLoss.length){
+    const worst = Math.min(...overLoss.map(t=>t.c.rMultiple));
+    add(90, 'overloss',
+      `−1R을 넘겨 잃은 거래 ${overLoss.length}건 (최악 ${worst.toFixed(2)}R). 손절을 세워두고 그 자리에서 안 나왔다는 뜻이에요.`);
+  }
+
+  // ③ 연속 손실 뒤 사이즈 증가 — 전형적인 틸트.
+  const seq = w.calced.slice().sort(cmpTradeAsc);
+  let lossRun = 0, tilt = 0;
+  seq.forEach((t, i)=>{
+    const q = Math.max(1, parseInt(t.qty,10)||1);
+    if(lossRun >= 2 && i>0){
+      const pq = Math.max(1, parseInt(seq[i-1].qty,10)||1);
+      if(q > pq) tilt++;
+    }
+    lossRun = t.c.win ? 0 : lossRun+1;
+  });
+  if(tilt) add(80, 'tilt',
+    `손실 2연패 뒤에 계약 수를 늘린 거래가 ${tilt}건 있어요. 잃은 걸 되찾으려는 신호입니다.`);
+
+  // ④ 감정적 조기청산 — 본인이 이미 그렇게 적어둔 거래.
+  const emo = w.calced.filter(t=>exitsOf(t).some(e=>e && e.reason==='감정적조기청산'));
+  if(emo.length) add(70, 'emo',
+    `«감정적조기청산»으로 적은 거래가 ${emo.length}건이에요. 계획이 아니라 불안이 청산을 결정했습니다.`);
+
+  // ⑤ 계획 없는 청산이 절반을 넘음
+  const withReason = w.calced.filter(t=>exitsOf(t).some(e=>e && e.reason));
+  const adhoc = w.calced.filter(t=>exitsOf(t).some(e=>e && e.reason==='추가판단후연장'));
+  if(withReason.length >= 5 && adhoc.length/withReason.length >= 0.5)
+    add(60, 'adhoc',
+      `청산의 ${Math.round(adhoc.length/withReason.length*100)}%가 «추가판단후연장»이에요. 규칙이 아니라 그때그때 판단으로 나오고 있습니다.`);
+
+  // ⑥ 이익은 짧게, 손실은 길게 — 보유 시간이 있는 거래만.
+  const held = w.calced.map(t=>({t, m:tradeHoldMinutes(t)})).filter(x=>x.m!=null);
+  const hw = held.filter(x=>x.t.c.win).map(x=>x.m);
+  const hl = held.filter(x=>!x.t.c.win).map(x=>x.m);
+  if(hw.length>=3 && hl.length>=3){
+    const avg = a=>a.reduce((s,x)=>s+x,0)/a.length;
+    const aw = avg(hw), al = avg(hl);
+    if(al > aw*1.3) add(50, 'hold',
+      `이긴 거래는 평균 ${fmtHold(Math.round(aw))} 만에 나오는데 진 거래는 ${fmtHold(Math.round(al))}을 붙들고 있어요. 이익은 조급하게 자르고 손실은 끌고 있습니다.`);
+  }
+
+  // ⑦ 청산 사유를 아예 안 남김 — 위 판정들이 작동하지 못한다.
+  if(w.count >= 5 && withReason.length === 0)
+    add(40, 'noreason',
+      `청산 사유를 남긴 거래가 없어요. 사유를 적어두면 «계획대로 나왔나»를 여기서 짚어드릴 수 있습니다.`);
+
+  return flags.sort((a,b)=>b.sev-a.sev);
 }
 
 // 코칭 피드백 문구 생성
@@ -382,22 +479,36 @@ function weeklyCoaching(w){
       desc:'진입가·손절 예정가·청산가를 넣으면 거래별 RR과 이번 주 실현 R을 코칭해드려요.' };
   }
   const rTxt = (w.rSum>=0?'+':'') + w.rSum.toFixed(2) + 'R';
-  const winTxt = w.winRate.toFixed(0) + '%';
-  const bestTxt = (w.bestTicker && w.bestR>0)
-    ? `${w.bestTicker}이(가) +${w.bestR.toFixed(2)}R로 가장 좋아요. ` : '';
-  let tone, title, advice;
-  if(w.rSum >= 1){
+  // 승률은 청산된 전체, R은 손절가가 있는 거래만 → 분모가 다르다. 다르면 밝힌다.
+  const winTxt = w.winRate.toFixed(0) + '%'
+    + (w.noStopCnt>0 ? ` <span class="muted">(R 집계는 손절가 있는 ${w.withR.length}건 기준)</span>` : '');
+
+  const flags = weeklyFlags(w);
+  let tone, title;
+  if(flags.length && flags[0].sev >= 80){
+    // 규칙 위반이 심하면 결과가 좋아도 그걸 먼저 말한다.
+    tone='bad'; title='지킨 것부터 보세요';
+  } else if(w.rSum >= 1){
     tone='good'; title='리스크 대비 성과 양호';
-    advice='같은 손절 기준을 유지해보세요.';
   } else if(w.rSum >= 0){
     tone='neutral'; title='리스크 대비 성과 보통';
-    advice='수익은 지켰지만 폭이 작아요. 손익비(RR)를 키워보세요.';
   } else {
     tone='bad'; title='리스크 대비 성과 불량';
-    advice='손절 기준과 진입 근거를 다시 점검해보세요.';
   }
-  const desc = `${rTxt}, 승률 ${winTxt}입니다. ${bestTxt}${advice}`;
-  return { tone, title, desc };
+
+  let advice;
+  if(flags.length){
+    advice = flags[0].msg;
+  } else {
+    // 걸린 게 없을 때만 잘한 점을 말한다. 비교할 종목이 2개 이상이고
+    // 표본이 5건 넘을 때만 종목 이야기를 꺼낸다 (한 종목만 했으면 비교가 아니다).
+    advice = (w.bestTicker && w.bestR>0)
+      ? `규칙대로 했어요. 종목별로는 ${w.bestTicker}이(가) 평균 ${w.bestR>=0?'+':''}${w.bestR.toFixed(2)}R로 가장 좋습니다.`
+      : (w.rSum>=0 ? '규칙을 어긴 거래가 없어요. 지금 기준을 유지하세요.'
+                   : '규칙은 지켰는데 결과가 안 따라왔어요. 손절이 아니라 진입 자리를 점검할 때입니다.');
+  }
+  const desc = `${rTxt}, 승률 ${winTxt}입니다. ${advice}`;
+  return { tone, title, desc, flags };
 }
 
 // 거래의 청산 내역을 표준 배열로 반환 (구버전 거래도 호환)
@@ -458,11 +569,14 @@ function calcTrade(t){
            qty, closedQty, openQty, avgExit, partial: openQty>0,
            win: net>0 };
 }
+/* 주의: toISOString() 은 UTC 로 바꾼다. 한국(UTC+9)에서 오전 9시 이전에 쓰면
+   날짜가 하루 밀린다 — 아시아 세션을 새벽에 기록하면 주 범위가 통째로 어긋난다.
+   그래서 로컬 날짜를 그대로 쓰는 isoOf() 를 쓴다. */
 function getWeekRange(d){
   const dt=new Date(d); const dow=(dt.getDay()+6)%7;
   const mon=new Date(dt); mon.setDate(dt.getDate()-dow);
   const sun=new Date(mon); sun.setDate(mon.getDate()+6);
-  return [mon.toISOString().slice(0,10), sun.toISOString().slice(0,10)];
+  return [isoOf(mon), isoOf(sun)];
 }
 
 /* ---------- 로컬 캐시 (오프라인/즉시표시용, 사용자별) ---------- */
@@ -502,7 +616,7 @@ async function remoteLoad(){
   const { data, error } = await sb.from('trades').select('*').order('date',{ascending:false});
   state.syncing = false;
   if(error){ console.error(error); render(); return; }
-  state.trades = (data||[]).map(fromRow).sort((a,b)=>b.date.localeCompare(a.date));
+  state.trades = (data||[]).map(fromRow).sort(cmpTradeDesc);
   saveCache();
   render();
 }
@@ -729,10 +843,16 @@ function renderCoaching(){
     <p class="coach-r serif ${rColor}">${w.rSum>=0?'+':''}${w.rSum.toFixed(2)}R</p>
     <p class="coach-title serif">${co.title}</p>
     <p class="coach-desc">${co.desc}</p>
+    ${(co.flags && co.flags.length>1) ? `<ul class="coach-more">
+      ${co.flags.slice(1,3).map(f=>`<li>${f.msg}</li>`).join('')}
+      ${co.flags.length>3?`<li class="muted">그 외 ${co.flags.length-3}가지</li>`:''}
+    </ul>` : ''}
     <div class="coach-chips">
       <span class="chip">WIN ${w.winRate.toFixed(0)}%</span>
       <span class="chip">PF ${w.pf===Infinity?'∞':w.pf.toFixed(2)}</span>
       <span class="chip">AVG ${w.avgR>=0?'+':''}${w.avgR.toFixed(2)}R</span>
+      ${(co.flags && co.flags.length) ? `<span class="chip warn">점검 ${co.flags.length}</span>`
+                                      : `<span class="chip okay">규칙 이상 없음</span>`}
     </div>
     <div class="coach-deco">${bullSVG(toneColor)}</div>
   </div>`;
@@ -900,6 +1020,8 @@ function renderTradeCard(t){
   const delCls = state.confirmDeleteId===t.id ? 'icon-btn danger-active' : 'icon-btn';
   const meta=[];
   if(t.entryTime){ const _s=sessionOf(t.date,t.entryTime); meta.push(`⏱ ${esc(t.entryTime)}${_s?` · ${_s}`:''}`); }
+  const _hm = tradeHoldMinutes(t);
+  if(_hm!=null) meta.push(`<span class="tag">보유 ${fmtHold(_hm)}</span>`);
   if(t.setup) meta.push(`<span class="tag">${esc(t.setup)}</span>`);
   if(t.bias!=='' && t.bias!=null){
     const bv=parseInt(t.bias,10);
@@ -951,7 +1073,21 @@ function renderLog(){
   html += `<div class="logbar">
     <div class="subseg">${groupBtns.map(([k,l])=>
       `<button class="${state.logGroup===k?'active':''}" onclick="setLogGroup('${k}')">${l}</button>`).join('')}</div>
-    ${state.trades.length?`<button class="exp-btn" onclick="exportForAnalysis()">📋 분석용 복사</button>`:''}
+    ${state.trades.length?`<span style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end;">
+      <select onchange="setExportRange(this.value)" style="font-size:12px;padding:4px 6px;width:auto;" title="복사할 기간">
+        ${[['all','전체'],['month','이번 달'],['week','이번 주'],['day','오늘'],['custom','날짜 지정']].map(([k,l])=>
+          `<option value="${k}" ${state.exportRange===k?'selected':''}>${l}</option>`).join('')}
+      </select>
+      ${state.exportRange==='custom' ? `
+        <input type="date" value="${esc(state.exportFrom)}" onchange="setExportDate('from',this.value)"
+               style="font-size:12px;padding:3px 5px;width:auto;" title="시작일 (비우면 처음부터)" />
+        <span class="muted small">~</span>
+        <input type="date" value="${esc(state.exportTo)}" onchange="setExportDate('to',this.value)"
+               style="font-size:12px;padding:3px 5px;width:auto;" title="종료일 (비우면 끝까지)" />
+        <span class="muted small" id="export-count">${exportRangeList().list.length}건</span>
+      ` : ''}
+      <button class="exp-btn" onclick="exportForAnalysis()">📋 분석용 복사</button>
+    </span>`:''}
   </div>`;
 
   if(state.trades.length===0){
@@ -1117,7 +1253,7 @@ function renderCalendar(){
 }
 
 function chartSVG(){
-  const sorted = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort((a,b)=>a.date.localeCompare(b.date));
+  const sorted = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
   if(sorted.length===0) return `<p class="muted small center pad">거래를 기록하면 그래프가 나타나요.</p>`;
   let cum=0;
   const data = sorted.map(t=>{ cum+=t.c.net; return {date:t.date.slice(5), cum:Number(cum.toFixed(2))}; });
@@ -1239,7 +1375,16 @@ function renderStats(){
   const withSess = state.trades
     .map(t => ({ t, sess: sessionOf(t.date, t.entryTime) }))
     .filter(x => x.sess && calcTrade(x.t));
-  if(withSess.length >= 3){
+  const noTimeCnt = state.trades.filter(t => calcTrade(t) && !t.entryTime).length;
+  if(withSess.length === 0){
+    // 표를 아예 숨기면 "왜 없지?" 하고 헤매게 된다. 이유를 알려준다.
+    html += `<div class="fac-card">
+      <h3 style="margin:0 0 4px;">세션별 성과</h3>
+      <p class="fac-hint" style="margin:0;">진입 시간이 기록된 청산 거래가 아직 없습니다.
+      ${noTimeCnt ? `청산된 거래 ${noTimeCnt}건에 시간이 비어 있어요 — 거래를 수정해서 진입 시간을 넣으면 세션이 자동으로 분류됩니다.`
+                  : '거래를 기록할 때 진입 시간을 넣으면 세션이 자동으로 분류됩니다.'}</p>
+    </div>`;
+  } else {
     const bySess = SESSIONS
       .map(name => ({ name, s: statsOf(withSess.filter(x=>x.sess===name).map(x=>x.t)) }))
       .filter(r => r.s.count > 0)
@@ -1264,8 +1409,64 @@ function renderStats(){
           <td class="${r.s.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(r.s.net)}</td>
         </tr>`).join('')}
       </table>
-      <p class="fac-hint" style="margin-top:8px;">시간 기록된 거래 ${withSess.length}건 / 전체 ${state.trades.length}건 · 표본 20건 이상부터 신뢰할 만합니다.</p>
+      <p class="fac-hint" style="margin-top:8px;">시간 기록된 거래 ${withSess.length}건${noTimeCnt?` · 시간이 비어 분류 못 한 거래 ${noTimeCnt}건`:''} · 표본 20건 이상부터 신뢰할 만합니다.</p>
     </div>`;
+  }
+
+  /* ── 보유 시간 (승/패 분리) ────────────────────────────────
+     시간 자체가 목적은 아니다. "이익은 빨리 자르고 손실은 오래 끌었나"를
+     보기 위한 진단용 숫자다. 진 거래가 더 길면 그게 먼저 고칠 습관이다. */
+  {
+    const withHold = state.trades
+      .map(t => ({ t, c: calcTrade(t), m: tradeHoldMinutes(t) }))
+      .filter(x => x.c && x.m != null);
+    const noHoldCnt = state.trades.filter(t => calcTrade(t) && tradeHoldMinutes(t) == null).length;
+    const avg = a => a.length ? a.reduce((s,x)=>s+x,0)/a.length : null;
+    const med = a => { if(!a.length) return null; const b=[...a].sort((x,y)=>x-y);
+                       const i=Math.floor(b.length/2);
+                       return b.length%2 ? b[i] : (b[i-1]+b[i])/2; };
+    const wins   = withHold.filter(x=>x.c.win).map(x=>x.m);
+    const losses = withHold.filter(x=>!x.c.win).map(x=>x.m);
+    const wAvg = avg(wins), lAvg = avg(losses);
+
+    let verdict = '';
+    if(wAvg!=null && lAvg!=null && wins.length>=3 && losses.length>=3){
+      verdict = wAvg > lAvg * 1.2
+        ? '이긴 거래를 더 오래 들고 있습니다. 손절은 빠르고 이익은 태우는 쪽 — 건강한 모양입니다.'
+        : lAvg > wAvg * 1.2
+          ? '진 거래를 더 오래 붙들고 있습니다. 이익은 조급하게 자르고 손실은 끌고 있다는 신호예요.'
+          : '승·패의 보유 시간이 비슷합니다. 청산 판단이 결과와 무관하게 이뤄지고 있을 수 있어요.';
+    }
+
+    html += `<div class="fac-card" style="margin-top:16px;">
+      <h3 style="margin:0 0 4px;">보유 시간</h3>
+      <p class="fac-hint" style="margin:0 0 10px;">진입 시간과 청산 시간이 둘 다 있는 거래만 집계합니다.</p>`;
+
+    if(withHold.length === 0){
+      html += `<p class="muted small" style="margin:0;">아직 집계할 거래가 없어요. 청산할 때 «청산 시간»을 같이 남기면 여기에 쌓입니다.${noHoldCnt?` (시간이 빠진 청산 거래 ${noHoldCnt}건)`:''}</p>`;
+    } else {
+      const row = (name, arr, cls) => `<tr style="border-top:1px solid var(--border);text-align:right;">
+        <td style="text-align:left;padding:8px 0;">${name}</td>
+        <td>${arr.length}</td>
+        <td class="${cls||''}" style="font-weight:700;">${arr.length?fmtHold(Math.round(avg(arr))):'-'}</td>
+        <td>${arr.length?fmtHold(Math.round(med(arr))):'-'}</td>
+        <td>${arr.length?fmtHold(Math.min(...arr)):'-'}</td>
+        <td>${arr.length?fmtHold(Math.max(...arr)):'-'}</td>
+      </tr>`;
+      html += `<table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <tr style="text-align:right;color:var(--muted);">
+          <th style="text-align:left;font-weight:600;">구분</th><th style="font-weight:600;">건수</th>
+          <th style="font-weight:600;">평균</th><th style="font-weight:600;">중앙값</th>
+          <th style="font-weight:600;">최단</th><th style="font-weight:600;">최장</th>
+        </tr>
+        ${row('이긴 거래', wins, 'profit')}
+        ${row('진 거래', losses, 'loss')}
+        ${row('전체', withHold.map(x=>x.m), '')}
+      </table>`;
+      if(verdict) html += `<p class="fac-hint" style="margin-top:8px;">${verdict}</p>`;
+      html += `<p class="fac-hint" style="margin-top:6px;">집계 ${withHold.length}건${noHoldCnt?` · 시간이 빠져 제외된 청산 거래 ${noHoldCnt}건`:''}</p>`;
+    }
+    html += `</div>`;
   }
 
   html += state.trades.length>0 ? `<button class="clear-all" onclick="clearAll()">${clearLabel}</button>` : '';
@@ -1324,6 +1525,20 @@ function renderModal(){
           <span class="muted small" id="session-hint" style="display:block;margin-top:4px;">${f.entryTime?`→ ${sessionOf(f.date,f.entryTime)} 세션`:'시간을 넣으면 세션이 자동으로 붙습니다'}</span>
         </div>
         <div class="field">
+          <label>청산 시간 (선택)</label>
+          <input type="time" value="${esc(f.exitTime)}" oninput="state.form.exitTime=this.value; updateHoldHint();" />
+          <span class="muted small" id="hold-hint" style="display:block;margin-top:4px;">${holdHintText(f)}</span>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="field">
+          <label>청산 사유 (선택)</label>
+          <select onchange="state.form.exitReason=this.value;">
+            <option value="">선택 안 함</option>
+            ${EXIT_REASONS.map(r=>`<option value="${r}" ${f.exitReason===r?'selected':''}>${r}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
           <label>매매 근거/셋업 (선택)</label>
           <input type="text" placeholder="예: 돌파, 눌림목" value="${esc(f.setup)}" oninput="state.form.setup=this.value" />
         </div>
@@ -1358,10 +1573,54 @@ function renderDirectionButtons(){
 }
 function updateSessionHint(){
   const el = document.getElementById('session-hint');
-  if(!el) return;
-  const f = state.form;
-  const sess = sessionOf(f.date, f.entryTime);
-  el.textContent = sess ? `→ ${sess} 세션` : '시간을 넣으면 세션이 자동으로 붙습니다';
+  if(el){
+    const f = state.form;
+    const sess = sessionOf(f.date, f.entryTime);
+    el.textContent = sess ? `→ ${sess} 세션` : '시간을 넣으면 세션이 자동으로 붙습니다';
+  }
+  updateHoldHint();   // 진입 시간이 바뀌면 보유 시간도 다시 계산
+}
+
+/* 보유 시간(분). 청산이 진입보다 이르면 다음 날로 넘어간 것으로 본다(야간장). */
+function holdMinutes(entryTime, exitTime){
+  const ok = s => /^\d{1,2}:\d{2}$/.test(s||'');
+  if(!ok(entryTime) || !ok(exitTime)) return null;
+  const toMin = s => { const [h,m] = s.split(':').map(Number); return h*60+m; };
+  let d = toMin(exitTime) - toMin(entryTime);
+  if(d < 0) d += 24*60;
+  return d;
+}
+/* 마지막 청산 시간 / 청산 사유(중복 제거) */
+function exitTimeOf(t){
+  const ex = exitsOf(t).filter(e=>e && e.time);
+  return ex.length ? ex[ex.length-1].time : '';
+}
+function exitReasonOf(t){
+  const rs = [...new Set(exitsOf(t).map(e=>e&&e.reason).filter(Boolean))];
+  return rs.join('+');
+}
+/* 거래의 보유 시간 — 진입 시간 ~ 마지막 청산 시간 */
+function tradeHoldMinutes(t){
+  if(!t || !t.entryTime) return null;
+  const ex = exitsOf(t).filter(e=>e && e.time);
+  if(!ex.length) return null;
+  return holdMinutes(t.entryTime, ex[ex.length-1].time);
+}
+function fmtHold(min){
+  if(min==null) return '';
+  if(min < 60) return `${min}분`;
+  const h = Math.floor(min/60), m = min%60;
+  return m ? `${h}시간 ${m}분` : `${h}시간`;
+}
+function holdHintText(f){
+  const min = holdMinutes(f.entryTime, f.exitTime);
+  if(min==null) return '진입·청산 시간을 다 넣으면 보유 시간이 나옵니다';
+  const sess = sessionOf(f.date, f.exitTime);
+  return `보유 ${fmtHold(min)}${sess?` · ${sess} 세션에서 청산`:''}`;
+}
+function updateHoldHint(){
+  const el = document.getElementById('hold-hint');
+  if(el) el.textContent = holdHintText(state.form);
 }
 
 function updatePreview(){
@@ -1467,6 +1726,18 @@ function openExit(id){
   render();
 }
 function closeExit(){ state.exitFor=null; state.exitForm={price:'',qty:'',time:'',reason:''}; render(); }
+/* 거래 정렬 비교 — 날짜가 같으면 진입 시간으로, 시간도 같으면 입력 순서로.
+   시간이 비어 있는 거래는 그날의 맨 뒤로 보낸다(정렬이 뒤집히지 않게). */
+function cmpTradeAsc(a, b){
+  const d = String(a.date).localeCompare(String(b.date));
+  if(d) return d;
+  const ta = a.entryTime || '99:99', tb = b.entryTime || '99:99';
+  const t = ta.localeCompare(tb);
+  if(t) return t;
+  return String(a.id).localeCompare(String(b.id));
+}
+const cmpTradeDesc = (a, b) => -cmpTradeAsc(a, b);
+
 function nowHM(){ const d=new Date(); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
 
 /* ── 거래 세션 자동 판정 ─────────────────────────────────────
@@ -1559,28 +1830,30 @@ function showToast(msg){
   el.textContent=msg; el.classList.add('show');
   clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove('show'), 1800);
 }
-function copyText(text){
+function copyText(text, msg){
+  msg = msg || '분석용 기록을 복사했어요';
   if(navigator.clipboard && window.isSecureContext){
-    navigator.clipboard.writeText(text).then(()=>showToast('분석용 기록을 복사했어요')).catch(()=>fallbackCopy(text));
-  } else { fallbackCopy(text); }
+    navigator.clipboard.writeText(text).then(()=>showToast(msg)).catch(()=>fallbackCopy(text, msg));
+  } else { fallbackCopy(text, msg); }
 }
-function fallbackCopy(text){
+function fallbackCopy(text, msg){
+  msg = msg || '분석용 기록을 복사했어요';
   const ta=document.createElement('textarea'); ta.value=text;
   ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta);
   ta.select();
-  try{ document.execCommand('copy'); showToast('분석용 기록을 복사했어요'); }
+  try{ document.execCommand('copy'); showToast(msg); }
   catch(e){ showToast('복사 실패 — CSV로 저장할게요'); downloadCSV(); }
   document.body.removeChild(ta);
 }
 // 전체 거래를 계산값 포함 마크다운으로 만들어 클립보드에 복사 (클로드에 붙여넣어 피드백용)
-function buildAnalysisText(){
+function buildAnalysisText(list){
+  list = list || state.trades;
   const s=computeStats();
-  const rows=state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c)
-    .sort((a,b)=>a.date.localeCompare(b.date));
+  const rows=list.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
   const head=`# 매매일지 (내보낸 시각: ${new Date().toLocaleString('ko-KR')})\n`+
     `요약: 총 ${s.total}건 · 누적 순손익 ${fmt(s.totalNet)} · 누적 R ${s.totalR>=0?'+':''}${s.totalR.toFixed(2)}R · 승률 ${s.winRate.toFixed(0)}% · PF ${s.pf===Infinity?'∞':s.pf.toFixed(2)}\n\n`;
-  const cols=`| 날짜 | 시간 | 세션 | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | 셋업 | 바이어스 |\n`+
-    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
+  const cols=`| 날짜 | 진입시간 | 세션 | 청산시간 | 보유(분) | 종목 | 방향 | 계약 | 진입 | 청산 | 손절 | 순손익 | RR | R | 결과 | 청산사유 | 셋업 | 바이어스 |\n`+
+    `|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n`;
   const body=rows.map(t=>{
     const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
     const dir=t.direction==='long'?'롱':'숏';
@@ -1588,22 +1861,77 @@ function buildAnalysisText(){
     const bTxt=(bv==null||isNaN(bv))?'-':`${bv>0?'+':''}${bv}(${zoneOf(bv).label})`;
     const rrTxt = t.c.rr!=null ? `1:${t.c.rr.toFixed(2)}` : '-';
     const rTxt  = t.c.rMultiple!=null ? `${t.c.rMultiple>=0?'+':''}${t.c.rMultiple.toFixed(2)}` : '-';
-    return `| ${t.date} | ${t.entryTime||'-'} | ${sessionOf(t.date,t.entryTime)||'-'} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.win?'승':'패'} | ${t.setup||'-'} | ${bTxt} |`;
+    const xt = exitTimeOf(t), hm = tradeHoldMinutes(t);
+    return `| ${t.date} | ${t.entryTime||'-'} | ${sessionOf(t.date,t.entryTime)||'-'} | ${xt||'-'} | ${hm==null?'-':hm} | ${label} | ${dir} | ${t.c.qty} | ${t.entry} | ${t.exit} | ${t.stop||'-'} | ${t.c.net.toFixed(2)} | ${rrTxt} | ${rTxt} | ${t.c.win?'승':'패'} | ${exitReasonOf(t)||'-'} | ${t.setup||'-'} | ${bTxt} |`;
   }).join('\n');
   return head+cols+body+'\n';
 }
-function exportForAnalysis(){
-  if(state.trades.length===0){ showToast('내보낼 거래가 없어요'); return; }
-  copyText(buildAnalysisText());
+/* 분석용 복사 — 범위를 골라서 그 기간 거래만 복사한다.
+   전체를 통째로 복사하면 붙여넣는 쪽에서 너무 길어 쓰기 어렵다. */
+function setExportRange(v){
+  state.exportRange = v;
+  // custom 을 처음 고르면 오늘 하루로 시작 (빈 칸 두 개보다 낫다)
+  if(v === 'custom' && !state.exportFrom && !state.exportTo){
+    state.exportFrom = todayISO();
+    state.exportTo   = todayISO();
+  }
+  render();
 }
-function downloadCSV(){
-  const rows=state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort((a,b)=>a.date.localeCompare(b.date));
-  const header=['날짜','시간','세션','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','셋업','바이어스'];
+
+function exportRangeList(){
+  const r = state.exportRange;
+  if(r === 'all') return { list: state.trades.slice(), label: '전체' };
+
+  if(r === 'custom'){
+    // 한쪽만 넣어도 동작한다. 시작일만 = 그날 이후 전부, 종료일만 = 그날까지 전부.
+    let from = state.exportFrom || '0000-01-01';
+    let to   = state.exportTo   || '9999-12-31';
+    if(from > to) { const t = from; from = to; to = t; }   // 거꾸로 넣어도 알아서
+    const list = state.trades.filter(t => t.date >= from && t.date <= to);
+    const label = (state.exportFrom || state.exportTo)
+      ? `${from==='0000-01-01'?'처음':from} ~ ${to==='9999-12-31'?'끝':to}`   // 뒤집어 넣어도 바로잡아 표시
+      : '전체(날짜 미지정)';
+    return { list, label };
+  }
+
+  const [ps, pe] = currentPeriodRange(r);
+  const list = state.trades.filter(t => t.date >= ps && t.date <= pe);
+  const label = r==='day' ? `오늘(${ps})` : r==='week' ? `이번 주(${ps}~${pe})` : `이번 달(${ps.slice(0,7)})`;
+  return { list, label };
+}
+
+function setExportDate(which, v){
+  if(which === 'from') state.exportFrom = v; else state.exportTo = v;
+  updateExportCount();
+}
+
+/* 날짜를 고칠 때마다 render() 를 부르면 날짜 입력칸의 포커스가 날아간다.
+   건수 표시만 갱신한다. */
+function updateExportCount(){
+  const el = document.getElementById('export-count');
+  if(!el) return;
+  const { list } = exportRangeList();
+  el.textContent = `${list.length}건`;
+  el.style.color = list.length ? 'var(--muted)' : 'var(--accent)';
+}
+
+function exportForAnalysis(){
+  const { list, label } = exportRangeList();
+  if(list.length === 0){ showToast(`${label}에 기록된 거래가 없어요`); return; }
+  copyText(buildAnalysisText(list), `${label} ${list.length}건을 복사했어요`);
+}
+function downloadCSV(list){
+  list = list || state.trades;
+  const rows=list.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
+  const header=['날짜','진입시간','세션','청산시간','보유(분)','종목','방향','계약','진입','청산','손절','순손익','RR','R','결과','청산사유','셋업','바이어스'];
   const csv=[header.join(',')].concat(rows.map(t=>{
     const label=t.ticker==='CUSTOM'?(t.customTicker||'커스텀'):t.ticker;
     const cell=v=>`"${String(v==null?'':v).replace(/"/g,'""')}"`;
-    return [t.date,t.entryTime||'',sessionOf(t.date,t.entryTime)||'',label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit,t.stop||'',
-      t.c.net.toFixed(2),t.c.rr!=null?t.c.rr.toFixed(2):'',t.c.rMultiple!=null?t.c.rMultiple.toFixed(2):'',t.c.win?'승':'패',t.setup||'',
+    const hm=tradeHoldMinutes(t);
+    return [t.date,t.entryTime||'',sessionOf(t.date,t.entryTime)||'',exitTimeOf(t)||'',hm==null?'':hm,
+      label,t.direction==='long'?'롱':'숏',t.c.qty,t.entry,t.exit,t.stop||'',
+      t.c.net.toFixed(2),t.c.rr!=null?t.c.rr.toFixed(2):'',t.c.rMultiple!=null?t.c.rMultiple.toFixed(2):'',t.c.win?'승':'패',
+      exitReasonOf(t)||'',t.setup||'',
       (t.bias===''||t.bias==null)?'':t.bias].map(cell).join(',');
   })).join('\n');
   const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'});
@@ -1623,9 +1951,13 @@ function openNewForm(){
 }
 function openEditForm(id){
   const t=state.trades.find(x=>x.id===id); if(!t) return;
+  const ex = exitsOf(t);
+  const single = ex.length===1 ? ex[0] : null;   // 청산 1건이면 시간·사유를 폼에서 고칠 수 있게
   state.form = { date:t.date, ticker:t.ticker, customTicker:t.customTicker||'', customMultiplier:t.customMultiplier||'',
     direction:t.direction, qty:String(t.qty||'1'), entry:String(t.entry), exit:String(t.exit), stop: (t.stop===null||t.stop===undefined)?'':String(t.stop),
-    entryTime:t.entryTime||'', setup:t.setup||'', bias:(t.bias==null?'':String(t.bias)) };
+    entryTime:t.entryTime||'', exitTime:(single&&single.time)||'', exitReason:(single&&single.reason)||'',
+    setup:t.setup||'', bias:(t.bias==null?'':String(t.bias)),
+    exits: Array.isArray(t.exits) ? t.exits.map(e=>({...e})) : [] };   // 부분 청산 기록 보존
   state.editingId=id; state.formOpen=true; render();
 }
 function closeForm(){ state.formOpen=false; render(); }
@@ -1650,21 +1982,27 @@ function submitForm(){
     return;
   }
   const record = { id: state.editingId || uid(), ...f };
-  // 청산가를 직접 적었으면 전량 청산 1건으로 기록
+  const already = Array.isArray(f.exits) ? f.exits : [];
+  record.exits = already.map(e=>({...e}));
   if(f.exit!=='' && !isNaN(parseFloat(f.exit))){
-    const already = Array.isArray(f.exits) ? f.exits : [];
     if(already.length===0){
-      record.exits = [{ price:String(f.exit), qty:String(Math.max(1,parseInt(f.qty,10)||1)), time:'' }];
+      // 청산가를 직접 적었으면 전량 청산 1건으로 기록
+      record.exits = [{ price:String(f.exit), qty:String(Math.max(1,parseInt(f.qty,10)||1)),
+                        time:f.exitTime||'', reason:f.exitReason||'' }];
+    } else if(already.length===1){
+      // 청산이 1건뿐이면 폼에서 고친 값을 그대로 반영
+      record.exits = [{ ...already[0], price:String(f.exit),
+                        time:f.exitTime||'', reason:f.exitReason||'' }];
     }
-  } else if(!Array.isArray(record.exits)){
-    record.exits = [];
+    // 부분 청산이 여러 건이면 건드리지 않는다 (폼으로는 표현할 수 없음)
   }
+  delete record.exitTime; delete record.exitReason;   // 폼 전용 필드 — 저장하지 않음
   if(state.editingId){
     state.trades = state.trades.map(t=>t.id===state.editingId?record:t);
   } else {
     state.trades = [record, ...state.trades];
   }
-  state.trades.sort((a,b)=>b.date.localeCompare(a.date));
+  state.trades.sort(cmpTradeDesc);
   saveCache();
   state.formOpen=false;
   render();
