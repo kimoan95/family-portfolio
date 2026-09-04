@@ -340,7 +340,9 @@ let state = {
   trades: [],
   tab: 'log',
   logGroup: 'day',     // day | week | month
-  statPeriod: 'week',  // 통계 탭 기간: day | week | month
+  statPeriod: 'week',  // 통계 탭 기간: all | day | week | month | custom
+  statFrom: '',        // custom 일 때 시작일
+  statTo: '',          // custom 일 때 종료일
   exportRange: 'all',   // 분석용 복사 범위: all | day | week | month | custom
   exportFrom: '',       // custom 일 때 시작일 (비우면 제한 없음)
   exportTo: '',         // custom 일 때 종료일
@@ -675,8 +677,8 @@ async function remoteClear(){
   if(error){ alert('전체 삭제 실패: '+error.message); await remoteLoad(); }
 }
 
-function computeStats(){
-  const calced = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
+function computeStats(src){
+  const calced = (src || state.trades).map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
   const total = calced.length;
   const totalNet = calced.reduce((s,t)=>s+t.c.net,0);
   const withR = calced.filter(t=>t.c.rMultiple!=null);
@@ -768,9 +770,10 @@ function statsOf(list){
   const grossWin = wins.reduce((s,t)=>s+t.c.net,0);
   const grossLoss = Math.abs(calced.filter(t=>!t.c.win).reduce((s,t)=>s+t.c.net,0));
   const pf = grossLoss>0 ? grossWin/grossLoss : (grossWin>0 ? Infinity : 0);
-  const avgR = count ? rSum/count : 0;
+  const rCount = calced.filter(t=>t.c.rMultiple!=null).length;
+  const avgR = rCount ? rSum/rCount : 0;   // 손절가 없는 거래는 평균에서 제외
   const avgNet = count ? net/count : 0;
-  return { count, net, rSum, winRate, pf, avgR, avgNet, ...splitOutcome(calced) };
+  return { count, rCount, net, rSum, winRate, pf, avgR, avgNet, calced, ...splitOutcome(calced) };
 }
 // 통계 탭에서 보는 "현재 기간"의 날짜 범위
 function currentPeriodRange(period){
@@ -782,7 +785,66 @@ function currentPeriodRange(period){
   }
   return getWeekRange(now); // week
 }
-function periodTitle(period){ return period==='day'?'오늘':period==='month'?'이번 달':'이번 주'; }
+function periodTitle(period){
+  return period==='all'?'전체':period==='day'?'오늘':period==='month'?'이번 달':period==='custom'?'선택 기간':'이번 주';
+}
+
+/* ── 통계 탭 기간 필터 ────────────────────────────────────────
+   전에는 위 요약 4장과 «기간별 성과»에만 적용되고 세션·바이어스·
+   3분류는 항상 전체였다. 기간을 바꿔도 안 변해서 헷갈렸다.
+   이제 이 함수 하나가 탭 전체를 지배한다. */
+function statRangeList(){
+  const r = state.statPeriod;
+  if(r === 'all') return { list: state.trades.slice(), label: '전체', from:null, to:null };
+  if(r === 'custom'){
+    let from = state.statFrom || '0000-01-01';
+    let to   = state.statTo   || '9999-12-31';
+    if(from > to){ const t=from; from=to; to=t; }          // 거꾸로 넣어도 알아서
+    const list = state.trades.filter(t => t.date>=from && t.date<=to);
+    const label = (state.statFrom || state.statTo)
+      ? `${from==='0000-01-01'?'처음':from} ~ ${to==='9999-12-31'?'끝':to}` : '전체(날짜 미지정)';
+    return { list, label, from, to };
+  }
+  const [ps,pe] = currentPeriodRange(r);
+  const list = state.trades.filter(t => t.date>=ps && t.date<=pe);
+  return { list, label: periodTitle(r), from:ps, to:pe };
+}
+function setStatDate(which, v){
+  if(which==='from') state.statFrom = v; else state.statTo = v;
+  render();
+}
+
+/* 표본이 적으면 숫자가 우연이다. 숨기진 않되 «믿지 마»라고 표시한다. */
+const MIN_SAMPLE = 10;
+function dimIf(n){ return n < MIN_SAMPLE ? ' style="opacity:.45;"' : ''; }
+
+/* 여러 기준(종목·청산사유·요일…)의 성과표를 같은 모양으로 찍는다.
+   기대값(평균 R)으로 정렬한다 — 합계로 정렬하면 «많이 거래한 것»이 이긴다. */
+function breakdownTable(groups){
+  const rows = groups.map(g=>({name:g.name, s:statsOf(g.list)}))
+                     .filter(r=>r.s.count>0)
+                     .sort((a,b)=>b.s.avgR-a.s.avgR);
+  if(!rows.length) return `<p class="muted small" style="margin:0;">해당 기간에 집계할 거래가 없어요.</p>`;
+  const num = (v,d=2) => v==null ? '-' : `${v>=0?'+':''}${v.toFixed(d)}`;
+  return `<table style="width:100%;border-collapse:collapse;font-size:12px;">
+    <tr style="color:var(--muted);text-align:right;">
+      <th style="text-align:left;font-weight:600;padding:6px 0;">구분</th>
+      <th style="font-weight:600;">건수</th><th style="font-weight:600;">적중률</th>
+      <th style="font-weight:600;">평균R</th><th style="font-weight:600;">익절R</th>
+      <th style="font-weight:600;">손절R</th><th style="font-weight:600;">순손익</th>
+    </tr>
+    ${rows.map(r=>`<tr style="border-top:1px solid var(--border);text-align:right;"${dimIf(r.s.count)}>
+      <td style="text-align:left;padding:8px 0;">${esc(r.name)}</td>
+      <td>${r.s.count}</td>
+      <td>${r.s.decided?`${r.s.hitRate.toFixed(0)}%`:'-'}</td>
+      <td class="${r.s.avgR>=0?'profit':'loss'}" style="font-weight:700;">${num(r.s.avgR)}</td>
+      <td class="profit">${num(r.s.avgHitR)}</td>
+      <td class="loss">${num(r.s.avgMissR)}</td>
+      <td class="${r.s.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(r.s.net)}</td>
+    </tr>`).join('')}
+  </table>
+  <p class="fac-hint" style="margin-top:8px;">평균 R(거래당 기대값)이 높은 순. ${MIN_SAMPLE}건 미만은 흐리게 — 우연일 수 있어요.</p>`;
+}
 
 function calendarMap(){
   const map={};
@@ -909,9 +971,9 @@ function groupLabelOf(key, g){
   const mon=ymd(key); const sun=new Date(mon); sun.setDate(mon.getDate()+6);
   return `${mon.getMonth()+1}월 ${mon.getDate()}일 ~ ${sun.getMonth()+1}월 ${sun.getDate()}일`;
 }
-function groupTrades(g){
+function groupTrades(g, src){
   const groups=[]; const idx={};
-  state.trades.filter(t=>!isOpen(t)).forEach(t=>{   // 보유 중은 위 섹션에서 따로 표시
+  (src || state.trades).filter(t=>!isOpen(t)).forEach(t=>{   // 보유 중은 위 섹션에서 따로 표시
     const c=calcTrade(t);
     const key=groupKeyOf(t.date,g);
     if(!(key in idx)){ idx[key]=groups.length; groups.push({key,trades:[],net:0,count:0,rSum:0}); }
@@ -1314,8 +1376,8 @@ function renderCalendar(){
   </div>`;
 }
 
-function chartSVG(){
-  const sorted = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
+function chartSVG(src){
+  const sorted = (src || state.trades).map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
   if(sorted.length===0) return `<p class="muted small center pad">거래를 기록하면 그래프가 나타나요.</p>`;
   let cum=0;
   const data = sorted.map(t=>{ cum+=t.c.net; return {date:t.date.slice(5), cum:Number(cum.toFixed(2))}; });
@@ -1344,20 +1406,28 @@ function chartSVG(){
 
 function renderStats(){
   const p = state.statPeriod;
-  const [ps,pe] = currentPeriodRange(p);
-  const cur = statsOf(state.trades.filter(t=>t.date>=ps && t.date<=pe));
+  const { list: F, label: rangeLabel } = statRangeList();   // 이 탭 전체가 이 목록만 본다
+  const cur = statsOf(F);
   const clearLabel = state.confirmDeleteId==='ALL' ? '정말 전체 삭제할까요? (다시 탭)' : '전체 기록 삭제';
-  const pBtns=[['day','일별'],['week','주별'],['month','월별']];
+  const pBtns=[['all','전체'],['day','일별'],['week','주별'],['month','월별'],['custom','직접']];
 
-  const openCnt = state.trades.filter(isOpen).length;
-  let html = `<div class="logbar">
+  const openCnt = F.filter(isOpen).length;
+  let html = `<div class="logbar" style="flex-wrap:wrap;gap:8px;">
     <div class="subseg">${pBtns.map(([k,l])=>
       `<button class="${p===k?'active':''}" onclick="setStatPeriod('${k}')">${l}</button>`).join('')}</div>
+    <span class="muted small" style="margin-left:auto;">${esc(rangeLabel)} · ${F.length}건</span>
   </div>`;
+  if(p==='custom'){
+    html += `<div class="logbar" style="gap:6px;flex-wrap:wrap;">
+      <input type="date" value="${esc(state.statFrom)}" onchange="setStatDate('from',this.value)" style="flex:1;min-width:130px;" />
+      <span class="muted small">~</span>
+      <input type="date" value="${esc(state.statTo)}" onchange="setStatDate('to',this.value)" style="flex:1;min-width:130px;" />
+    </div>`;
+  }
   if(openCnt){
     html += `<div class="banner">보유 중 ${openCnt}건은 손익이 확정되지 않아 통계에서 제외됩니다.</div>`;
   }
-  const allStats = computeStats();
+  const allStats = computeStats(F);
   if(allStats.noStopCount){
     html += `<div class="banner">손절가가 없는 거래 ${allStats.noStopCount}건은 R을 계산할 수 없어 <b>R 통계에서만</b> 제외됩니다(손익 금액은 반영).</div>`;
   }
@@ -1377,26 +1447,27 @@ function renderStats(){
   </div>`;
 
   html += `<div class="card">
-    <p style="font-weight:700;font-size:13px;margin:0 0 8px;">누적 순수익 흐름 (전체)</p>
-    ${chartSVG()}
+    <p style="font-weight:700;font-size:13px;margin:0 0 8px;">누적 순수익 흐름 <span class="muted" style="font-weight:400;">(${esc(rangeLabel)})</span></p>
+    ${chartSVG(F)}
   </div>`;
 
-  // 기간별 성과 비교 (선택한 단위로 나눠 각각의 지표)
-  if(state.trades.length>0){
-    const groups = groupTrades(p).slice(0,12);
+  // 기간별 성과 비교 — 전체/직접지정일 때는 주 단위로 쪼갠다
+  const gUnit = (p==='day'||p==='week'||p==='month') ? p : 'week';
+  if(F.length>0){
+    const groups = groupTrades(gUnit, F).slice(0,12);
     html += `<div class="card">
-      <p style="font-weight:700;font-size:13px;margin:0 0 4px;">${p==='day'?'일별':p==='week'?'주별':'월별'} 성과</p>
+      <p style="font-weight:700;font-size:13px;margin:0 0 4px;">${gUnit==='day'?'일별':gUnit==='week'?'주별':'월별'} 성과</p>
       <table style="width:100%;border-collapse:collapse;font-size:12px;">
         <tr style="color:var(--muted);text-align:right;">
           <th style="text-align:left;font-weight:600;padding:6px 0;">기간</th>
-          <th style="font-weight:600;">순손익</th><th style="font-weight:600;">승률</th><th style="font-weight:600;">R</th>
+          <th style="font-weight:600;">순손익</th><th style="font-weight:600;">적중률</th><th style="font-weight:600;">R</th>
         </tr>
         ${groups.map(g=>{
           const gs=statsOf(g.trades);
           return `<tr style="border-top:1px solid var(--border);text-align:right;">
             <td style="text-align:left;padding:8px 0;">${groupLabelOf(g.key,p)}</td>
             <td class="${gs.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(gs.net)}</td>
-            <td>${gs.winRate.toFixed(0)}%</td>
+            <td>${gs.decided?`${gs.hitRate.toFixed(0)}%`:'-'}</td>
             <td class="${gs.rSum>=0?'profit':'loss'}" style="font-weight:700;">${gs.rSum>=0?'+':''}${gs.rSum.toFixed(1)}</td>
           </tr>`;
         }).join('')}
@@ -1405,7 +1476,7 @@ function renderStats(){
   }
 
   // 바이어스 점수 구간별 성과 검증 (가중치가 맞는지 데이터로 확인)
-  const scored = state.trades.filter(t=>t.bias!=='' && t.bias!=null && !isNaN(parseInt(t.bias,10)));
+  const scored = F.filter(t=>t.bias!=='' && t.bias!=null && !isNaN(parseInt(t.bias,10)));
   if(scored.length>0){
     const byZone = BIAS_ZONES.map(z=>{
       const list = scored.filter(t=>{ const v=parseInt(t.bias,10); return v>=z.min && v<=z.max; });
@@ -1428,16 +1499,16 @@ function renderStats(){
           <td class="${r.s.net>=0?'profit':'loss'}" style="font-weight:700;">${fmt(r.s.net)}</td>
         </tr>`).join('')}
       </table>
-      <p class="fac-hint" style="margin-top:8px;">점수 기록된 거래 ${scored.length}건 / 전체 ${state.trades.length}건</p>
+      <p class="fac-hint" style="margin-top:8px;">점수 기록된 거래 ${scored.length}건 / ${esc(rangeLabel)} ${F.length}건</p>
     </div>`;
   }
 
   // ── 세션별 성과 ───────────────────────────────────────────
   // 진입 시간에서 세션을 자동으로 뽑아 묶는다. 별도 입력이 필요 없다.
-  const withSess = state.trades
+  const withSess = F
     .map(t => ({ t, sess: sessionOf(t.date, t.entryTime) }))
     .filter(x => x.sess && calcTrade(x.t));
-  const noTimeCnt = state.trades.filter(t => calcTrade(t) && !t.entryTime).length;
+  const noTimeCnt = F.filter(t => calcTrade(t) && !t.entryTime).length;
   if(withSess.length === 0){
     // 표를 아예 숨기면 "왜 없지?" 하고 헤매게 된다. 이유를 알려준다.
     html += `<div class="fac-card">
@@ -1480,14 +1551,20 @@ function renderStats(){
      끝난 거래를 따로 떼면 «적중률은 낮지만 페이오프가 큰» 구조가 드러난다.
      입력이 필요 없다 — 진입가·청산가·손절가만 있으면 자동으로 갈린다. */
   {
-    const sp = splitOutcome(state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c));
+    const sp = splitOutcome(F.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c));
     if(sp.decided + sp.bes.length > 0){
-      const row = (name, arr, avg, cls) => `<tr style="border-top:1px solid var(--border);text-align:right;">
+      const medOf = arr => { const v=arr.map(t=>t.c.rMultiple).filter(x=>x!=null).sort((a,b)=>a-b);
+        if(!v.length) return null;
+        const i=Math.floor(v.length/2);
+        return v.length%2 ? v[i] : (v[i-1]+v[i])/2; };
+      const row = (name, arr, avg, cls) => { const md=medOf(arr);
+        return `<tr style="border-top:1px solid var(--border);text-align:right;">
         <td style="text-align:left;padding:8px 0;"><span class="tag out-${name}">${name}</span></td>
         <td>${arr.length}</td>
         <td class="${cls}" style="font-weight:700;">${avg!=null?`${avg>=0?'+':''}${avg.toFixed(2)}R`:'-'}</td>
+        <td>${md!=null?`${md>=0?'+':''}${md.toFixed(2)}R`:'-'}</td>
         <td>${arr.reduce((s,t)=>s+t.c.net,0)>=0?'+':''}$${Math.abs(arr.reduce((s,t)=>s+t.c.net,0)).toFixed(0)}</td>
-      </tr>`;
+      </tr>`; };
       // 손절이 −1R 로 고정될 때의 성과 — 적중률이 낮을수록 이 차이가 커진다
       const ideal = (sp.avgHitR!=null && sp.avgMissR!=null)
         ? sp.hits.length*sp.avgHitR - sp.misses.length*1.0 + (sp.avgBeR||0)*sp.bes.length : null;
@@ -1499,7 +1576,7 @@ function renderStats(){
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
           <tr style="text-align:right;color:var(--muted);">
             <th style="text-align:left;font-weight:600;">구분</th><th style="font-weight:600;">건수</th>
-            <th style="font-weight:600;">평균 R</th><th style="font-weight:600;">순손익</th>
+            <th style="font-weight:600;">평균 R</th><th style="font-weight:600;">중앙값</th><th style="font-weight:600;">순손익</th>
           </tr>
           ${row('익절', sp.hits, sp.avgHitR, 'profit')}
           ${row('손절', sp.misses, sp.avgMissR, 'loss')}
@@ -1518,7 +1595,7 @@ function renderStats(){
      "얼마나 갈 수 있었나" 대비 "얼마를 챙겼나". 본절 스탑이 이른지
      진입이 늦은지를 가르는 유일한 단서다. */
   {
-    const all = state.trades.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
+    const all = F.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c);
     const withMfe = all.map(t=>({t, r:mfeR(t)})).filter(x=>x.r!=null && x.t.c.rMultiple!=null);
     const bes = all.filter(t=>t.c.outcome==='본절');
     const beHit  = bes.filter(t=>t.beResult==='hit').length;
@@ -1558,10 +1635,10 @@ function renderStats(){
      시간 자체가 목적은 아니다. "이익은 빨리 자르고 손실은 오래 끌었나"를
      보기 위한 진단용 숫자다. 진 거래가 더 길면 그게 먼저 고칠 습관이다. */
   {
-    const withHold = state.trades
+    const withHold = F
       .map(t => ({ t, c: calcTrade(t), m: tradeHoldMinutes(t) }))
       .filter(x => x.c && x.m != null);
-    const noHoldCnt = state.trades.filter(t => calcTrade(t) && tradeHoldMinutes(t) == null).length;
+    const noHoldCnt = F.filter(t => calcTrade(t) && tradeHoldMinutes(t) == null).length;
     const avg = a => a.length ? a.reduce((s,x)=>s+x,0)/a.length : null;
     const med = a => { if(!a.length) return null; const b=[...a].sort((x,y)=>x-y);
                        const i=Math.floor(b.length/2);
@@ -1608,6 +1685,210 @@ function renderStats(){
       html += `<p class="fac-hint" style="margin-top:6px;">집계 ${withHold.length}건${noHoldCnt?` · 시간이 빠져 제외된 청산 거래 ${noHoldCnt}건`:''}</p>`;
     }
     html += `</div>`;
+  }
+
+  /* ── 종목별 / 청산사유별 / 계약 수별 / 요일별 ──────────────
+     전부 같은 표 모양(breakdownTable)으로 찍는다. 정렬 기준은 평균 R —
+     합계로 정렬하면 «많이 거래한 것»이 1등이 되어 아무 정보가 없다. */
+  {
+    const closed = F.filter(t=>calcTrade(t));
+
+    // 종목별
+    const tk = {};
+    closed.forEach(t=>{
+      const k = t.ticker==='CUSTOM' ? (t.customTicker||'커스텀') : t.ticker;
+      (tk[k] = tk[k] || []).push(t);
+    });
+    if(Object.keys(tk).length){
+      html += `<div class="fac-card" style="margin-top:16px;">
+        <h3 style="margin:0 0 4px;">종목별 성과</h3>
+        <p class="fac-hint" style="margin:0 0 10px;">평균 R이 마이너스인 종목은 «잘 안 맞는 종목»입니다. 표본이 쌓였는데도 계속 마이너스면 빼는 게 답이에요.</p>
+        ${breakdownTable(Object.entries(tk).map(([name,list])=>({name,list})))}
+      </div>`;
+    }
+
+    // 청산사유별 — 감정적 조기청산이 «얼마짜리 습관»인지 가격표를 붙인다
+    const rs = {};
+    closed.forEach(t=>{
+      const k = exitReasonOf(t) || '(미기재)';
+      (rs[k] = rs[k] || []).push(t);
+    });
+    const reasoned = closed.filter(t=>exitReasonOf(t)).length;
+    html += `<div class="fac-card" style="margin-top:16px;">
+      <h3 style="margin:0 0 4px;">청산사유별 성과</h3>`;
+    if(reasoned === 0){
+      html += `<p class="fac-hint" style="margin:0;">청산 사유를 남긴 거래가 없어요. 청산할 때 사유를 고르면 «감정적조기청산이 거래당 몇 R짜리 습관인지»가 여기 숫자로 나옵니다.</p>`;
+    } else {
+      const best = Object.entries(rs).map(([n,l])=>({n,s:statsOf(l)}))
+        .filter(x=>x.n!=='(미기재)' && x.s.count>=3).sort((a,b)=>b.s.avgR-a.s.avgR);
+      const gap = best.length>=2 ? (best[0].s.avgR - best[best.length-1].s.avgR) : null;
+      html += `<p class="fac-hint" style="margin:0 0 10px;">계획대로 나온 청산과 그렇지 않은 청산의 차이가 곧 «고치면 얼마를 버는가»입니다.${
+        gap!=null && gap>0.3 ? ` 지금은 <b>${esc(best[0].n)}</b>과 <b>${esc(best[best.length-1].n)}</b>의 차이가 거래당 <b>${gap.toFixed(2)}R</b>이에요.` : ''}</p>
+      ${breakdownTable(Object.entries(rs).map(([name,list])=>({name,list})))}`;
+    }
+    html += `</div>`;
+
+    // 계약 수별 — 사이즈를 키운 게 확신이었나 틸트였나
+    const qs = {};
+    closed.forEach(t=>{
+      const q = Math.max(1, parseInt(t.qty,10)||1);
+      (qs[q] = qs[q] || []).push(t);
+    });
+    const qKeys = Object.keys(qs).map(Number).sort((a,b)=>a-b);
+    if(qKeys.length >= 2){
+      const s1 = statsOf(qs[qKeys[0]]), sN = statsOf(qs[qKeys[qKeys.length-1]]);
+      const worse = s1.count>=5 && sN.count>=5 && sN.avgR < s1.avgR - 0.2;
+      html += `<div class="fac-card" style="margin-top:16px;">
+        <h3 style="margin:0 0 4px;">계약 수별 성과</h3>
+        <p class="fac-hint" style="margin:0 0 10px;">사이즈를 키운 거래가 더 나쁘면, 키운 이유가 «확신»이 아니라 «되찾고 싶어서»였다는 뜻입니다.${
+          worse ? ` <b class="loss">${qKeys[qKeys.length-1]}계약이 ${qKeys[0]}계약보다 거래당 ${(s1.avgR-sN.avgR).toFixed(2)}R 나쁩니다.</b>` : ''}</p>
+        ${breakdownTable(qKeys.map(q=>({name:`${q}계약`, list:qs[q]})))}
+      </div>`;
+    }
+
+    // 요일별
+    const wd = {};
+    closed.forEach(t=>{
+      const k = WEEKDAYS[(ymd(t.date).getDay()+6)%7];
+      (wd[k] = wd[k] || []).push(t);
+    });
+    if(Object.keys(wd).length >= 2){
+      html += `<div class="fac-card" style="margin-top:16px;">
+        <h3 style="margin:0 0 4px;">요일별 성과</h3>
+        <p class="fac-hint" style="margin:0 0 10px;">요일 자체에 마법은 없지만, 특정 요일에 무너진다면 그날의 컨디션이나 일정에 원인이 있을 수 있어요.</p>
+        ${breakdownTable(WEEKDAYS.filter(d=>wd[d]).map(d=>({name:d, list:wd[d]})))}
+      </div>`;
+    }
+  }
+
+  /* ── 손절 준수 · 연속 기록 · 최대 낙폭 ────────────────────── */
+  {
+    const calced = F.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c).sort(cmpTradeAsc);
+    if(calced.length){
+      const withR = calced.filter(t=>t.c.rMultiple!=null);
+      const losses = withR.filter(t=>t.c.outcome==='손절');
+      const breached = losses.filter(t=>t.c.rMultiple < -1.2);
+      const keepRate = losses.length ? (losses.length-breached.length)/losses.length*100 : null;
+      const worst = losses.length ? Math.min(...losses.map(t=>t.c.rMultiple)) : null;
+
+      // 연승·연패
+      let cw=0, cl=0, maxW=0, maxL=0, curRun=0, curIsWin=null;
+      calced.forEach(t=>{
+        const w = t.c.outcome==='익절', l = t.c.outcome==='손절';
+        if(w){ cw++; cl=0; maxW=Math.max(maxW,cw); }
+        else if(l){ cl++; cw=0; maxL=Math.max(maxL,cl); }
+        // 본절은 연속을 끊지도 잇지도 않는다
+      });
+      for(let i=calced.length-1;i>=0;i--){
+        const o=calced[i].c.outcome;
+        if(o==='본절') continue;
+        const isW = o==='익절';
+        if(curIsWin===null){ curIsWin=isW; curRun=1; }
+        else if(curIsWin===isW) curRun++;
+        else break;
+      }
+
+      // 누적 R 곡선의 최대 낙폭
+      let cum=0, peak=0, mdd=0;
+      withR.forEach(t=>{ cum+=t.c.rMultiple; peak=Math.max(peak,cum); mdd=Math.max(mdd,peak-cum); });
+
+      html += `<div class="fac-card" style="margin-top:16px;">
+        <h3 style="margin:0 0 4px;">규칙 준수 · 연속 기록</h3>
+        <p class="fac-hint" style="margin:0 0 10px;">적중률이 낮은 시스템은 손실이 −1R로 고정돼야만 성립합니다. 이 숫자가 제일 중요해요.</p>
+        <div class="grid-2">
+          <div class="card"><p class="stat-label">손절 준수율</p>
+            <p class="stat-value serif ${keepRate!=null&&keepRate>=90?'profit':'loss'}">${keepRate!=null?`${keepRate.toFixed(0)}%`:'-'}</p>
+            <p class="muted small" style="margin:4px 0 0;">손절 ${losses.length}건 중 −1R 초과 ${breached.length}건${worst!=null?` · 최악 ${worst.toFixed(2)}R`:''}</p></div>
+          <div class="card"><p class="stat-label">최대 낙폭 (R)</p>
+            <p class="stat-value serif loss">−${mdd.toFixed(2)}R</p>
+            <p class="muted small" style="margin:4px 0 0;">고점에서 여기까지 내려갔던 적이 있어요</p></div>
+          <div class="card"><p class="stat-label">최대 연승 / 연패</p>
+            <p class="stat-value serif">${maxW} / ${maxL}</p>
+            <p class="muted small" style="margin:4px 0 0;">본절은 연속을 끊지 않음</p></div>
+          <div class="card"><p class="stat-label">현재 연속</p>
+            <p class="stat-value serif ${curIsWin?'profit':curIsWin===false?'loss':''}">${curIsWin===null?'-':`${curRun}${curIsWin?'승':'패'}`}</p>
+            <p class="muted small" style="margin:4px 0 0;">${curIsWin===false&&curRun>=3?'연패 중 — 사이즈를 키우지 마세요':'&nbsp;'}</p></div>
+        </div>
+      </div>`;
+    }
+  }
+
+  /* ── R 분포 · 롤링 기대값 ────────────────────────────────── */
+  {
+    const withR = F.map(t=>({...t,c:calcTrade(t)})).filter(t=>t.c && t.c.rMultiple!=null).sort(cmpTradeAsc);
+    if(withR.length >= 5){
+      const bins = [
+        {label:'−3R 이하', hit:r=>r<=-3},
+        {label:'−3R ~ −2R', hit:r=>r>-3&&r<=-2},
+        {label:'−2R ~ −1R', hit:r=>r>-2&&r<=-1},
+        {label:'−1R ~ 0',  hit:r=>r>-1&&r<0},
+        {label:'본절권',    hit:r=>Math.abs(r)<=BREAKEVEN_R},
+        {label:'0 ~ +1R',  hit:r=>r>BREAKEVEN_R&&r<=1},
+        {label:'+1R ~ +2R', hit:r=>r>1&&r<=2},
+        {label:'+2R ~ +3R', hit:r=>r>2&&r<=3},
+        {label:'+3R 이상',  hit:r=>r>3},
+      ];
+      // 본절권과 겹치지 않게: 본절 판정을 먼저 걸러낸다
+      const counted = bins.map(b=>({...b, n:0}));
+      withR.forEach(t=>{
+        const r=t.c.rMultiple;
+        if(Math.abs(r)<=BREAKEVEN_R){ counted[4].n++; return; }
+        const i = counted.findIndex((b,idx)=> idx!==4 && b.hit(r));
+        if(i>=0) counted[i].n++;
+      });
+      const maxN = Math.max(...counted.map(b=>b.n), 1);
+      const rs = withR.map(t=>t.c.rMultiple).sort((a,b)=>a-b);
+      const median = rs.length%2 ? rs[(rs.length-1)/2] : (rs[rs.length/2-1]+rs[rs.length/2])/2;
+      const wins = withR.filter(t=>t.c.outcome==='익절').map(t=>t.c.rMultiple).sort((a,b)=>a-b);
+      const wMed = wins.length ? (wins.length%2 ? wins[(wins.length-1)/2] : (wins[wins.length/2-1]+wins[wins.length/2])/2) : null;
+      const wAvg = wins.length ? wins.reduce((s,x)=>s+x,0)/wins.length : null;
+      const top = wins.length ? wins[wins.length-1] : null;
+      const topShare = (wins.length && wAvg) ? top/(wins.reduce((s,x)=>s+x,0))*100 : null;
+
+      html += `<div class="fac-card" style="margin-top:16px;">
+        <h3 style="margin:0 0 4px;">R 분포</h3>
+        <p class="fac-hint" style="margin:0 0 10px;">평균 뒤에 숨은 모양을 봅니다. 오른쪽 끝 몇 건이 평균을 다 만들고 있다면 시스템이 그만큼 약해요.</p>
+        <table style="width:100%;border-collapse:collapse;font-size:12px;">
+          ${counted.map(b=>`<tr>
+            <td style="padding:3px 8px 3px 0;color:var(--muted);white-space:nowrap;">${b.label}</td>
+            <td style="width:100%;"><div style="height:12px;border-radius:3px;background:${
+              b.label.startsWith('−')?'var(--loss)':b.label==='본절권'?'var(--accent)':'var(--profit)'
+            };opacity:${b.n?0.75:0.12};width:${Math.max(b.n?4:2, b.n/maxN*100)}%;"></div></td>
+            <td style="padding-left:8px;text-align:right;font-weight:700;">${b.n||''}</td>
+          </tr>`).join('')}
+        </table>
+        <p class="fac-hint" style="margin-top:10px;">전체 중앙값 <b>${median>=0?'+':''}${median.toFixed(2)}R</b>${
+          wAvg!=null ? ` · 익절 평균 <b>+${wAvg.toFixed(2)}R</b> vs 익절 중앙값 <b>+${wMed.toFixed(2)}R</b>` : ''}</p>
+        ${(wAvg!=null && wMed!=null && wAvg > wMed*1.4) ? `<p class="fac-hint" style="margin-top:4px;color:var(--accent);">
+          평균이 중앙값보다 훨씬 큽니다 — 큰 거 몇 건이 성적을 끌어올리고 있어요. 최대 익절 ${top.toFixed(2)}R 한 건이 익절 합계의 ${topShare.toFixed(0)}%입니다.</p>` : ''}
+      </div>`;
+
+      // 롤링 기대값 — 나아지고 있나 나빠지고 있나
+      const W = Math.min(20, Math.max(5, Math.floor(withR.length/3)));
+      if(withR.length >= W*2){
+        const roll = [];
+        for(let i=W-1;i<withR.length;i++){
+          const win = withR.slice(i-W+1, i+1);
+          roll.push(win.reduce((s,t)=>s+t.c.rMultiple,0)/W);
+        }
+        const first = roll[0], last = roll[roll.length-1];
+        const w=300,h=110,pad=26;
+        const mn=Math.min(0,...roll), mx=Math.max(0,...roll), rg=(mx-mn)||1;
+        const stepX = roll.length>1 ? (w-2*pad)/(roll.length-1) : 0;
+        const pts = roll.map((v,i)=>`${(pad+i*stepX).toFixed(1)},${(h-pad-((v-mn)/rg)*(h-2*pad)).toFixed(1)}`).join(' ');
+        const zeroY = h-pad-((0-mn)/rg)*(h-2*pad);
+        html += `<div class="fac-card" style="margin-top:16px;">
+          <h3 style="margin:0 0 4px;">기대값 추이 <span class="muted" style="font-weight:400;font-size:12px;">최근 ${W}건 이동평균</span></h3>
+          <p class="fac-hint" style="margin:0 0 10px;">시스템이 나아지고 있는지 나빠지고 있는지를 보는 유일한 지표예요. 0선 위에 머물러야 합니다.</p>
+          <svg viewBox="0 0 ${w} ${h}" class="chart-svg" style="width:100%;">
+            <line x1="${pad}" y1="${zeroY}" x2="${w-pad}" y2="${zeroY}" stroke="var(--border)" stroke-dasharray="3 3"/>
+            <polyline points="${pts}" fill="none" stroke="${last>=0?'var(--profit)':'var(--loss)'}" stroke-width="2"/>
+          </svg>
+          <p class="fac-hint" style="margin-top:6px;">처음 ${first>=0?'+':''}${first.toFixed(2)}R → 지금 <b class="${last>=0?'profit':'loss'}">${last>=0?'+':''}${last.toFixed(2)}R</b>${
+            Math.abs(last-first)>0.15 ? (last>first?' · 좋아지는 중' : ' · 나빠지는 중') : ' · 큰 변화 없음'}</p>
+        </div>`;
+      }
+    }
   }
 
   html += state.trades.length>0 ? `<button class="clear-all" onclick="clearAll()">${clearLabel}</button>` : '';
@@ -1894,7 +2175,14 @@ async function signOut(){
 /* ---------- data actions ---------- */
 function setTab(t){ state.tab=t; state.confirmDeleteId=null; render(); }
 function setLogGroup(g){ state.logGroup=g; render(); }
-function setStatPeriod(p){ state.statPeriod=p; render(); }
+function setStatPeriod(p){
+  state.statPeriod=p;
+  if(p==='custom' && !state.statFrom && !state.statTo){   // 빈 칸 두 개보다 이번 달이 낫다
+    const [a,b]=currentPeriodRange('month');
+    state.statFrom=a; state.statTo=b;
+  }
+  render();
+}
 function setBiasTicker(t){ state.biasTicker=t; render(); }
 
 /* ---------- 청산 기록 ---------- */
