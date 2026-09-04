@@ -1647,7 +1647,7 @@ function renderModal(){
       <div class="two-col">
         <div class="field">
           <label>진입가</label>
-          <input type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.entry)}" oninput="state.form.entry=this.value; updatePreview();" />
+          <input type="text" inputmode="decimal" placeholder="0.00" value="${esc(f.entry)}" oninput="state.form.entry=this.value; updatePreview(); updateMfeHint();" />
         </div>
         <div class="field">
           <label>청산가 <span class="muted">(비우면 보유 중)</span></label>
@@ -1656,7 +1656,7 @@ function renderModal(){
       </div>
       <div class="field">
         <label>손절 세팅가 <span style="color:var(--accent);">*필수</span></label>
-        <input type="text" inputmode="decimal" placeholder="진입 시 잡은 손절가" value="${esc(f.stop)}" oninput="state.form.stop=this.value; updatePreview();" />
+        <input type="text" inputmode="decimal" placeholder="진입 시 잡은 손절가" value="${esc(f.stop)}" oninput="state.form.stop=this.value; updatePreview(); updateMfeHint();" />
         <p class="fac-hint" style="margin-top:5px;">R(리스크 대비 수익)을 계산하려면 "얼마를 잃을 각오였나"가 필요해요. 손절 없이는 R이 의미를 잃습니다.</p>
       </div>
       <div class="two-col">
@@ -1685,8 +1685,8 @@ function renderModal(){
         </div>
       </div>
       <div class="field">
-        <label>최대유리폭 MFE (선택 · 포인트)</label>
-        <input type="text" inputmode="decimal" placeholder="내 방향으로 최대 몇 포인트 갔나" value="${esc(f.mfe)}" oninput="state.form.mfe=this.value; updateMfeHint();" />
+        <label>최대유리폭 MFE (선택 · 최고가)</label>
+        <input type="text" inputmode="decimal" placeholder="${f.direction==='short'?'청산 전 최저가':'청산 전 최고가'}${f.entry?` (진입 ${esc(f.entry)})`:''}" value="${esc(f.mfe)}" oninput="state.form.mfe=this.value; updateMfeHint();" />
         <p class="fac-hint" id="mfe-hint" style="margin-top:5px;">${mfeHintText(f)}</p>
       </div>
       <div class="field">
@@ -1769,22 +1769,36 @@ function updateHoldHint(){
   if(el) el.textContent = holdHintText(state.form);
 }
 
-/* MFE 를 R 로 환산 — «몇 포인트»는 종목마다 뜻이 달라 비교가 안 된다.
-   손절폭으로 나눠야 «최대 몇 R 까지 갔나»가 되고 그제야 종목 간 비교가 된다. */
+/* MFE 를 R 로 환산 — 입력은 «최고가(가격)» 이다. 차액을 손으로 계산시키면
+   틀리기 쉽고 귀찮다. 진입가와의 거리를 앱이 구해 손절폭으로 나눈다.
+   롱이면 진입가보다 높아야, 숏이면 낮아야 «내 방향»이다. */
+function mfeMove(t){
+  const v = parseFloat(t.mfe), entry = parseFloat(t.entry);
+  if(isNaN(v) || isNaN(entry)) return null;
+  return (v - entry) * (t.direction==='short' ? -1 : 1);   // 내 방향으로 간 거리
+}
 function mfeR(t){
-  const v = parseFloat(t.mfe);
+  const move = mfeMove(t);
   const entry = parseFloat(t.entry), stop = parseFloat(t.stop);
-  if(isNaN(v) || v<=0 || isNaN(entry) || isNaN(stop)) return null;
+  if(move==null || move<0 || isNaN(stop)) return null;      // 반대쪽 값 = 오입력
   const d = Math.abs(entry-stop);
-  return d>0 ? v/d : null;
+  return d>0 ? move/d : null;
 }
 function mfeHintText(f){
+  const v = parseFloat(f.mfe), entry = parseFloat(f.entry), stop = parseFloat(f.stop);
+  const dir = f.direction==='short' ? '낮은' : '높은';
+  if(isNaN(v)) return `청산 전까지 내 방향으로 간 최고가를 그대로 적으세요. 진입가와의 거리를 알아서 R로 바꿉니다.`;
+  if(isNaN(entry)) return '진입가를 먼저 넣어주세요.';
+  const move = mfeMove(f);
+  if(move < 0) return `롱/숏 방향과 반대예요. ${f.direction==='short'?'숏이면':'롱이면'} 진입가(${entry})보다 ${dir} 가격을 넣어주세요.`;
+  if(isNaN(stop)) return `진입가에서 ${move} 움직였습니다. 손절가를 넣으면 R로 환산돼요.`;
   const r = mfeR(f);
-  if(r==null) return '청산 전까지 내 방향으로 최대 몇 포인트 갔는지. 손절폭으로 나눠 R로 환산합니다.';
+  if(r==null) return '손절폭이 0이라 R을 계산할 수 없어요.';
+  if(r > 20) return `+${r.toFixed(0)}R? 포인트 차이가 아니라 «가격»을 그대로 넣어주세요 (예: ${entry}에서 ${f.direction==='short'?'내려간':'올라간'} 최고가).`;
   const c = calcTrade(f);
   const got = c && c.rMultiple!=null ? c.rMultiple : null;
   const keep = (got!=null && r>0) ? ` · 그중 ${(got/r*100).toFixed(0)}%를 챙겼어요` : '';
-  return `최대 +${r.toFixed(2)}R 까지 갔습니다${keep}`;
+  return `진입가에서 ${move.toFixed(2)} 이동 → 최대 +${r.toFixed(2)}R 까지 갔습니다${keep}`;
 }
 function updateMfeHint(){
   const el = document.getElementById('mfe-hint');
@@ -2140,7 +2154,7 @@ function selectTicker(tk){
 function selectDirection(d){
   state.form.direction=d;
   document.getElementById('direction-buttons').innerHTML = renderDirectionButtons();
-  updatePreview();
+  updatePreview(); updateMfeHint();   // MFE 는 방향에 따라 «최고가/최저가»가 뒤집힌다
 }
 function submitForm(){
   const f = state.form;
