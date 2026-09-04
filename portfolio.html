@@ -89,6 +89,10 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 </nav></div>
 
 
+
+
+
+
 <div id="loginView" style="display:none">
   <div class="login">
     <h1>가족 포트폴리오</h1>
@@ -145,7 +149,7 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
         <div><label>손절가</label><input type="number" id="f_stop" step="any"></div>
         <div><label>전략 *</label><select id="f_strat" required><option value="">선택하세요</option><option>돌파매매</option><option>눌림목매매</option><option>추세추종</option><option>역추세매매</option><option>갭매매</option><option>박스권매매</option><option>신고가매매</option><option>거래량급증매매</option><option>실적매매</option><option>공시매매</option><option>테마모멘텀매매</option><option>리포트매매</option><option>감매매</option><option>FOMO매매</option><option>물타기</option><option>단순단타</option></select></div>
         <div><label>심리 *</label><select id="f_mood" required><option value="">선택하세요</option><option>확신</option><option>불안/조급함</option><option>FOMO</option><option>지루함</option><option>욕심</option><option>후회</option><option>평온</option></select></div>
-        <div id="wExit" style="display:none"><label>청산사유 *</label><select id="f_exit"><option value="">선택하세요</option><option>목표가도달</option><option>트레일링스탑</option><option>손절가도달</option><option>감정적조기청산</option><option>추가판단후연장</option><option>기타</option></select></div>
+        <div id="wExit" style="display:none"><label>청산사유 *</label><select id="f_exit"><option value="">선택하세요</option><option>목표가도달</option><option>트레일링스탑</option><option>본절스탑</option><option>손절가도달</option><option>감정적조기청산</option><option>추가판단후연장</option><option>기타</option></select></div>
         <div style="grid-column:1/-1"><label>메모</label><input type="text" id="f_memo"></div>
         <div class="frow"><button type="submit" class="pri">거래 추가</button><span id="fHint" class="note" style="margin:0"></span></div>
       </form>
@@ -174,6 +178,15 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 
   <div id="v-settings" style="display:none">
     <div class="card"><h2>원금 설정</h2><div id="prIn"></div></div>
+    <div class="card"><h2>자동 적립</h2>
+      <p class="note">주택청약·적금처럼 <b>매월 같은 날 같은 금액</b>이 들어오는 계좌를 여기 등록하면,
+      날짜가 지날 때마다 잔액이 저절로 올라갑니다. 앱을 열지 않아도 «몇 번 지났나»를 그때그때 계산하므로
+      빠지거나 두 번 더해지지 않습니다.<br>
+      적립금은 수익이 아니라 새로 넣은 돈이라, <b>원금에도 같이 더해집니다</b> — 수익률이 부풀지 않게요.</p>
+      <div id="adIn"></div>
+      <button class="pri" id="ad_save" style="margin-top:10px">저장</button>
+      <div id="adMsg"></div>
+    </div>
     <div class="card"><h2>운용 규칙</h2><div id="rlIn"></div></div>
     <div class="card"><h2>선물 계좌</h2>
       <p class="note" style="margin-bottom:10px">선물 매매일지에 입력한 <b>실현손익이 이 계좌 잔액에 자동으로 더해집니다.</b><br>
@@ -192,7 +205,7 @@ button.gh{background:#fff;border:.5px solid #d8d6cf;border-radius:6px;padding:6p
 <script src="config.js"></script>
 <script>
 /* 화면 상단에 표시됩니다. 배포된 버전이 최신인지 확인하는 용도입니다. */
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v10';
 
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 let D = {persons:[],accounts:[],baselines:[],trades:[],tickers:[],prices:[],hist:[],settings:{}};
@@ -332,9 +345,68 @@ function derive(){
     for(const [k,v] of Object.entries(pos)) if(v.qty>1e-9)
       list.push({ticker:k,name:v.name,qty:v.qty,avg:v.cost/v.qty,cost:v.cost});
     if(cash<-1) warn.push(`${a.display_name}: 예수금 음수 (${won(cash)})`);
-    out[a.id]={acct:a,positions:list,cash};
+    const dep = autoDepOf(a.key);          // 매월 자동이체분
+    cash += dep.total;
+    out[a.id]={acct:a,positions:list,cash,dep};
   });
   return {byAcct:out,warn};
+}
+
+/* ══════════════════════════════════════════════════════════
+   자동 적립 — 주택청약·적금처럼 매월 같은 날 같은 금액이 들어오는 계좌
+   ────────────────────────────────────────────────────────
+   «그날이 되면 숫자를 써넣는» 방식은 쓰지 않는다. 앱을 안 열면 안 쌓이고,
+   두 번 열면 두 번 쌓일 수 있다. 대신 «기준일 이후 납입일이 몇 번 지났나»를
+   화면을 그릴 때마다 세서 더한다. 저장되는 건 규칙뿐이라 항상 정확하다.
+
+   ⚠️ 적립금은 «수익»이 아니라 «새로 넣은 돈»이다. 그래서 잔액뿐 아니라
+      원금에도 같이 더한다. 안 그러면 저축이 수익률로 둔갑한다.
+   ══════════════════════════════════════════════════════════ */
+const autoDepCfg = ()=> D.settings.autoDeposit || {};
+
+/* 기준일 이후 ~ 오늘까지 «매월 N일»이 몇 번 지났나.
+   N이 그 달에 없으면(31일 등) 그 달 마지막 날로 본다. */
+function autoDepCount(since, day, todayStr){
+  day = parseInt(day,10);
+  if(!since || !(day>=1 && day<=31)) return 0;
+  const today = todayStr || todayISO();
+  let [y,m] = since.split('-').map(Number);
+  let n = 0;
+  for(let i=0;i<1200;i++){                       // 최대 100년치 (무한루프 방지)
+    const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    const d = Math.min(day, last);
+    const iso = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    if(iso > todayStr) break;
+    if(iso > since) n++;                          // 기준일 당일은 이미 반영된 것으로 본다
+    m++; if(m>12){ m=1; y++; }
+  }
+  return n;
+}
+
+/* 계좌 하나의 자동 적립 결과 */
+function autoDepOf(acctKey){
+  const c = autoDepCfg()[acctKey];
+  const amt = c ? Number(c.amount)||0 : 0;
+  if(!c || amt<=0) return { count:0, total:0, cfg:c||null };
+  const count = autoDepCount(c.since, c.day, todayISO());
+  return { count, total: count*amt, cfg:c, amount:amt };
+}
+function todayISO(){
+  const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+/* 다음 납입일 (안내용) */
+function autoDepNext(c){
+  if(!c) return null;
+  const day=parseInt(c.day,10); if(!(day>=1&&day<=31)) return null;
+  const t=todayISO(); let [y,m]=t.split('-').map(Number);
+  for(let i=0;i<24;i++){
+    const last=new Date(Date.UTC(y,m,0)).getUTCDate();
+    const iso=`${y}-${String(m).padStart(2,'0')}-${String(Math.min(day,last)).padStart(2,'0')}`;
+    if(iso>t) return iso;
+    m++; if(m>12){m=1;y++;}
+  }
+  return null;
 }
 
 /* ── 실현손익 + R ── */
@@ -433,7 +505,14 @@ function agg(){
     const ck=a.currency==='USD'?st.cash*F:st.cash;
     if(Math.abs(ck)>.5){rows.push({name:'현금',vl:st.cash,vk:ck,ccy:a.currency,isCash:true});sub+=ck;}
     pa.cash+=ck; pa.total+=sub;
-    pa.accts.push({id:a.id,name:a.display_name,total:sub,rows,live:a.is_live,note:a.note,order:a.sort_order});
+    /* 적립금은 «벌어들인 돈»이 아니라 «새로 넣은 돈»이다.
+       원금에 같이 더하지 않으면 저축이 수익률로 둔갑한다. */
+    const depK = st.dep && st.dep.total ? (a.currency==='USD' ? st.dep.total*F : st.dep.total) : 0;
+    if(depK){ pa.principal += depK; pa.autoDep = (pa.autoDep||0) + depK; }
+    const depNote = st.dep && st.dep.count
+      ? `자동적립 ${st.dep.count}회 +${won(st.dep.total)}` : null;
+    pa.accts.push({id:a.id,name:a.display_name,total:sub,rows,live:a.is_live,
+      note:[a.note, depNote].filter(Boolean).join(' · '), order:a.sort_order});
   });
   /* 선물 계좌 — 총자산에만 더한다.
      원가(cost)·섹터·보유종목에는 넣지 않는다. 선물은 원가 개념이 없고,
@@ -884,7 +963,97 @@ function renderSettings(){
       <input type="number" step="any" value="${(R[k]*m).toFixed(m===1?0:1)}" data-rl="${k}" data-m="${m}" style="max-width:100px">
       <span class="note" style="margin:0">${u}</span></div>`).join('');
   $('rlIn').querySelectorAll('[data-rl]').forEach(i=>i.onchange=()=>setRule(i.dataset.rl,i.value,+i.dataset.m));
+  renderAutoDep();
   renderFutures();
+}
+
+/* 계좌 메모에 «매달 +100,000원» 같은 문구가 있으면 기본값으로 끌어온다 */
+function depDefaultAmount(a){
+  const m = String(a.note||'').match(/\+?\s*([\d,]{4,})\s*원/);
+  return m ? Number(m[1].replace(/,/g,'')) : 0;
+}
+
+function renderAutoDep(){
+  const cfg = autoDepCfg();
+  const rows = D.accounts.slice().sort((a,b)=>a.sort_order-b.sort_order).map(a=>{
+    const pl = (D.persons.find(x=>x.id===a.person_id)||{}).label || '';
+    const c  = cfg[a.key] || {};
+    const amt = c.amount ?? depDefaultAmount(a);
+    const day = c.day ?? 20;
+    const since = c.since ?? (D.settings.asOfDefault || '2026-08-20');
+    return {a, pl, amt, day, since};
+  });
+  // 금액이 잡히는 계좌를 위로 (주택청약·적금)
+  rows.sort((x,y)=> (y.amt>0) - (x.amt>0) || x.a.sort_order - y.a.sort_order);
+
+  $('adIn').innerHTML = rows.map(r=>{
+    const cnt = r.amt>0 ? autoDepCount(r.since, r.day, todayISO()) : 0;
+    const tot = cnt * (Number(r.amt)||0);
+    const nxt = autoDepNext({day:r.day});
+    const unit = r.a.currency==='USD' ? '$' : '원';
+    return `<div style="border-top:.5px solid #f0efe9;padding:9px 0">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="min-width:190px;font-size:12.5px">${esc(r.pl)} · ${esc(r.a.display_name)}</span>
+        <input type="number" step="any" value="${r.amt||''}" placeholder="0" data-ad-amt="${esc(r.a.key)}"
+               style="max-width:120px" title="매월 넣는 금액 (0이면 사용 안 함)">
+        <span class="note" style="margin:0">${unit} · 매월</span>
+        <input type="number" min="1" max="31" value="${r.day}" data-ad-day="${esc(r.a.key)}" style="max-width:64px">
+        <span class="note" style="margin:0">일 · 기준일</span>
+        <input type="date" value="${esc(r.since)}" data-ad-since="${esc(r.a.key)}" style="max-width:150px"
+               title="이 날짜의 잔액이 이미 반영된 시점. 이 날 이후의 납입일부터 셉니다.">
+      </div>
+      ${r.amt>0?`<div class="note" style="margin:5px 0 0">
+        ${esc(r.since)} 이후 <b>${cnt}회</b> 지남 → <b>+${r.a.currency==='USD'?'$'+tot.toLocaleString():won(tot)}</b>
+        ${nxt?` · 다음 납입 ${nxt}`:''}</div>`:''}
+    </div>`;
+  }).join('');
+  $('ad_save').onclick = saveAutoDep;
+}
+
+async function saveAutoDep(){
+  const v={};
+  document.querySelectorAll('[data-ad-amt]').forEach(i=>{
+    const k=i.dataset.adAmt, amt=parseFloat(i.value);
+    if(!(amt>0)) return;                       // 0·빈칸이면 등록 안 함
+    const day=parseInt(document.querySelector(`[data-ad-day="${k}"]`).value,10);
+    const since=document.querySelector(`[data-ad-since="${k}"]`).value;
+    if(!(day>=1&&day<=31)||!since) return;
+    v[k]={amount:amt, day, since};
+  });
+  const {error}=await sb.from('pf_settings').upsert({key:'autoDeposit', value:v});
+  if(error){ alert('저장 실패: '+error.message); return; }
+  D.settings.autoDeposit=v;
+  const n=Object.keys(v).length;
+  $('adMsg').innerHTML=`<div class="note" style="margin:8px 0 0;color:#2d7a4a">저장했습니다 · ${n}개 계좌 적용</div>`;
+  await loadAll(); render();
+}
+
+/* 연동 상태를 «항상» 보여준다. 예전에는 켜져 있을 때만 표시돼서,
+   꺼져 있거나 거래를 못 읽는 상태가 아무 흔적 없이 조용히 넘어갔다. */
+function futStatusHTML(c, fa, now){
+  const box = (bg,bd,html)=>`<div style="margin-top:12px;padding:10px;background:${bg};border-radius:7px;border:.5px solid ${bd};font-size:12.5px">${html}</div>`;
+  const n = (D.futTrades||[]).length;
+
+  if(!D.futLoaded)
+    return box('#fdf3f3','#f2d9d9',
+      `<b style="color:#c0392b">선물 매매일지를 읽지 못했습니다.</b>
+       <span class="note" style="margin:4px 0 0;display:block">로그인이 풀렸거나 권한 문제일 수 있어요. 새로고침해도 같으면 알려주세요.</span>`);
+
+  if(!c.enabled)
+    return box('#fdfaf2','#f0e6cd',
+      `<b>연동이 꺼져 있습니다.</b> 위 «대시보드에 표시»를 켜고 기준 잔액을 넣어야 반영됩니다.
+       <span class="note" style="margin:4px 0 0;display:block">읽어온 선물 거래 ${n}건 · 전체 누적손익 $${now.toFixed(2)}</span>`);
+
+  if(!fa)
+    return box('#fdfaf2','#f0e6cd', `<b>설정이 완전하지 않습니다.</b> 기준 잔액을 확인해 주세요.`);
+
+  return box('#fafaf8','#f0efe9',
+    `현재 <b>$${fa.usd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b>
+     (${won(fa.krw)}) · 기준 이후 ${fa.since>=0?'+':''}$${fa.since.toFixed(2)}
+     <span class="note" style="margin:4px 0 0;display:block">
+       ${esc(D.persons.find(x=>x.key===(c.person||'me'))?.label||'나')} 계좌에 더해집니다 ·
+       선물 거래 ${n}건 · 전체 누적손익 $${now.toFixed(2)}${
+       n===0 ? ' · <b style="color:#c0392b">거래가 0건이라 기준 잔액만 표시됩니다</b>' : ''}</span>`);
 }
 
 function renderFutures(){
@@ -917,11 +1086,7 @@ function renderFutures(){
       <span class="note" style="margin:0">USD · 비워두면 저장 시 현재값(${now.toFixed(2)})으로 자동 설정</span>
     </div>
     <button class="pri" id="fut_save">저장</button>
-    ${fa?`<div style="margin-top:12px;padding:10px;background:#fafaf8;border-radius:7px;border:.5px solid #f0efe9;font-size:12.5px">
-      현재 <b>$${fa.usd.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</b>
-      (${won(fa.krw)}) · 기준 이후 ${fa.since>=0?'+':''}$${fa.since.toFixed(2)}
-      <span class="note" style="margin:4px 0 0;display:block">선물 거래 ${(D.futTrades||[]).length}건 · 전체 누적손익 $${now.toFixed(2)}</span>
-    </div>`:''}`;
+    ${futStatusHTML(c, fa, now)}`;
   $('fut_save').onclick=saveFutures;
 }
 
